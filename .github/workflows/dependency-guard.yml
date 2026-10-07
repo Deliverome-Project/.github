@@ -1,0 +1,41 @@
+# Reusable dependency guard. Call it from any Deliverome repo:
+#
+#   jobs:
+#     guard:
+#       uses: Deliverome-Project/.github/.github/workflows/dependency-guard.yml@v1
+#
+# Fails a pull request that silently downgrades a package or newly locks a version under
+# `min-age-days` old, across uv.lock, Cargo.lock and package-lock.json. See README.md.
+name: dependency-guard
+
+on:
+  workflow_call:
+    inputs:
+      min-age-days:
+        type: number
+        default: 7
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # the base commit's lockfiles are read with git show
+      - uses: actions/checkout@v4
+        with:
+          repository: Deliverome-Project/.github
+          ref: v1  # keep in step with the tag callers use
+          path: .dependency-guard
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check lockfiles for downgrades and versions under ${{ inputs.min-age-days }} days old
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          MIN_AGE_DAYS: ${{ inputs.min-age-days }}
+        run: python .dependency-guard/scripts/dependency_guard.py
