@@ -514,9 +514,14 @@ def discover(std: Standards, repos: list[str] | None = None, log=print) -> list[
                     found.setdefault(b, []).append(f"ruleset {rs.get('name')}")
         except RuntimeError as e:
             log(f"warn {repo}: rulesets unreadable ({e}); relying on the other signals")
-        bases = Counter(gh("pr", "list", "-R", f"{org}/{repo}", "--state", "merged",
-                           "--search", f"merged:>={since}", "--limit", "1000",
-                           "--json", "baseRefName", "--jq", ".[].baseRefName").split())
+        try:
+            bases = Counter(gh("pr", "list", "-R", f"{org}/{repo}", "--state", "merged",
+                               "--search", f"merged:>={since}", "--limit", "1000",
+                               "--json", "baseRefName", "--jq", ".[].baseRefName").split())
+        except RuntimeError as e:
+            bases = Counter()
+            log(f"warn {repo}: merged pull requests unreadable ({e}); unprotected "
+                "integration branches will be missed")
         for b, n in bases.items():
             if n >= min_prs and b in branches:
                 found.setdefault(b, []).append(f"base of {n} merged PRs since {since}")
@@ -553,11 +558,19 @@ def required_checks(org: str, repo: str, branch: str) -> list[str]:
     return sorted(set(names) | set(prot.split("\n")) - {""})
 
 
+def stale_check_names(checks: list[str], python: str) -> list[str]:
+    """Required checks whose name carries a Python version other than the standard's."""
+    return [c for c in checks if any(v != python for v in re.findall(r"\b3\.\d+\b", c))]
+
+
 def open_prs_touching(org: str, repo: str, branch: str) -> list[str]:
+    """Open pull requests by people (not bots) that touch the files fan-out edits."""
     raw = gh("pr", "list", "-R", f"{org}/{repo}", "--base", branch, "--state", "open",
-             "--json", "number,title,files", check=False)
+             "--json", "number,title,files,author", check=False)
     out = []
     for pr in json.loads(raw or "[]"):
+        if (pr.get("author") or {}).get("is_bot"):
+            continue
         files = [f["path"] for f in pr.get("files", [])]
         if any(relevant(p) or PurePosixPath(p).name in {"uv.lock", "Cargo.lock"} for p in files):
             out.append(f"#{pr['number']} {pr['title']}")
@@ -623,10 +636,9 @@ def report_target(org: str, t: Target, std: Standards, expired: set[str]) -> dic
             findings += [f"{p}: {n} {v} is below the security floor {f.version} ({f.reason})"
                          for n, v, f in below_floors(text, eco, std)]
     notes = stale_exceptions(files, expired)
-    checks = required_checks(org, t.repo, t.branch)
-    notes += [f"required check '{c}' names a Python version: rename the job (or update "
-              "the branch protection) when the matrix changes" for c in checks
-              if re.search(r"\b3\.\d+\b", c)]
+    notes += [f"required check '{c}' names another Python than {std.python}: rename the job "
+              "or update the branch protection" for c in
+              stale_check_names(required_checks(org, t.repo, t.branch), std.python)]
     prs = open_prs_touching(org, t.repo, t.branch)
     notes += [f"open PR already touches these files: {p}" for p in prs]
     return {"repo": t.repo, "branch": t.branch, "found_by": t.reasons,
@@ -777,9 +789,9 @@ def fanout_target(org: str, t: Target, std: Standards, fresh: set[str], expired:
     if g.returncode != 0:
         plan.refusals.append("shared dependency guard failed: " + " | ".join(
             line for line in g.stdout.splitlines() if line.startswith("::error::")))
-    plan.notes += [f"required check '{c}' names a Python version: rename the job or update the "
-                   "branch protection before merging" for c in required_checks(org, t.repo, t.branch)
-                   if re.search(r"\b3\.\d+\b", c) and any("workflows" in e for e in plan.edits)]
+    plan.notes += [f"required check '{c}' names another Python than {std.python}: rename the "
+                   "job or update the branch protection before merging" for c in
+                   stale_check_names(required_checks(org, t.repo, t.branch), std.python)]
     plan.notes += [f"open PR already touches these files: {p}"
                    for p in open_prs_touching(org, t.repo, t.branch)]
     if dry_run or plan.refusals:

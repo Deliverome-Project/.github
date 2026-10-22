@@ -246,3 +246,8 @@ def test_guard_reads_floors_and_reports_drift(tmp_path, monkeypatch):
         "pypi", "certifi").version
     errors = dg.standards_drift()
     assert any("requires-python floor is 3.12" in e for e in errors)
+
+
+def test_stale_check_names():
+    checks = ["test (3.14)", "test (3.12)", "lint", "guard / dependency-guard", "py 3.13 + 3.14"]
+    assert st.stale_check_names(checks, "3.14") == ["test (3.12)", "py 3.13 + 3.14"]
