@@ -1,0 +1,14 @@
+# Shared pre-commit hooks for Deliverome repos. Use from a repo's .pre-commit-config.yaml:
+#
+#   - repo: https://github.com/Deliverome-Project/.github
+#     rev: <commit sha>  # v1
+#     hooks:
+#       - id: trust-store-check
+- id: trust-store-check
+  name: TLS trust stores exclude compromised CAs
+  description: Block a push while this machine trusts a compromised CA root or runs an unfixed uv.
+  entry: scripts/trust_store_check.py
+  language: script
+  pass_filenames: false
+  always_run: true
+  stages: [pre-push]

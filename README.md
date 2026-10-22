@@ -13,6 +13,11 @@ A reusable workflow that fails a pull request when it
    attacks are most dangerous in their first week; Dependabot's cooldown only covers the
    package it bumps, and Dependabot security updates skip the cooldown).
 
+3. **keeps a known-vulnerable version** anywhere in a lockfile, whether or not the PR touched
+   it. `SECURITY_FLOORS` in `scripts/dependency_guard.py` lists each floor with its reason;
+   raising one there reaches every calling repo on its next pull request. A version exactly
+   on a floor is exempt from the age rule, since the fix may be days old.
+
 It reads every `uv.lock` (PyPI), `Cargo.lock` (crates.io) and `package-lock.json` (npm) in
 the repository, compares each with the pull request's base, and looks up release dates from
 the registries. Standard-library Python; no dependencies.
@@ -45,6 +50,20 @@ allow-downgrade: pandas
 allow-fresh: openssl-sys
 ```
 
+### Security floors in force
+
+| Ecosystem | Package | Floor | Reason |
+|---|---|---|---|
+| PyPI | certifi | 2026.10.19 | eMudhra intermediate-CA key compromise, 2026-10-19 |
+| PyPI | pip | 26.2.2 | same |
+| PyPI | uv | 0.13.4 | same |
+| crates.io | webpki-roots, webpki-root-certs | 1.0.10 | same |
+| crates.io | rustls-webpki | 0.103.16 | same |
+
+A Python repo using `exclude-newer = "7 days"` also needs
+`exclude-newer-package = { certifi = false }` until the fix is a week old, or uv cannot
+resolve it.
+
 ### Run locally
 
 ```bash
@@ -57,3 +76,19 @@ BASE_SHA=origin/main python scripts/dependency_guard.py
   default-days: 7`.
 - Python resolvers: `[tool.uv] exclude-newer = "7 days"` so uv itself never picks a version
   under a week old.
+
+## Trust-store check (pre-push hook)
+
+`scripts/trust_store_check.py` blocks a push while the machine still trusts a compromised CA
+root (matched by SHA-256, in the macOS, Homebrew, Linux and repo `.venv` certifi bundles) or
+runs a uv older than its fixed release. It prints the fix for each finding. Add it to a
+repo's `.pre-commit-config.yaml`:
+
+```yaml
+- repo: https://github.com/Deliverome-Project/.github
+  rev: <commit sha>  # v1
+  hooks:
+    - id: trust-store-check
+```
+
+and make sure contributors run `pre-commit install --hook-type pre-push`.

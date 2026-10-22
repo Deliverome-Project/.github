@@ -113,3 +113,53 @@ def test_main_end_to_end(tmp_path, monkeypatch):
     assert dg.main() == 1  # still under 7 days old
     monkeypatch.setenv("PR_BODY", "allow-downgrade: pandas\nallow-fresh: pandas")
     assert dg.main() == 0
+
+
+CERTIFI = """version = 1
+revision = 3
+[[package]]
+name = "certifi"
+version = "{certifi}"
+source = {{ registry = "https://pypi.org/simple" }}
+"""
+
+
+def test_below_floor_flags_vulnerable_pins_only():
+    assert dg.below_floor(dg.parse_uv(CERTIFI.format(certifi="2026.5.20")), "pypi") == [
+        ("certifi", "2026.5.20", "2026.10.19", dg._EMUDHRA)
+    ]
+    for ok in ("2026.10.19", "2026.11.1"):
+        assert dg.below_floor(dg.parse_uv(CERTIFI.format(certifi=ok)), "pypi") == []
+    head = dg.parse_cargo(CARGO.format(rand="0.8.5").replace('"rand"', '"webpki-roots"', 1)
+                          .replace('"0.8.5"', '"1.0.9"'))
+    assert [r[:3] for r in dg.below_floor(head, "crates")] == [("webpki-roots", "1.0.9", "1.0.10")]
+
+
+def test_floor_fails_an_unrelated_pr_until_fixed(tmp_path, monkeypatch):
+    import subprocess
+
+    def git(*a):
+        subprocess.run(["git", *a], cwd=tmp_path, check=True, capture_output=True)
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    (tmp_path / "uv.lock").write_text(CERTIFI.format(certifi="2026.5.20"))
+    (tmp_path / "README.md").write_text("a")
+    git("add", ".")
+    git("commit", "-qm", "base")
+    (tmp_path / "README.md").write_text("b")  # the PR does not touch the lockfile
+    git("commit", "-qam", "head")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("BASE_SHA", "HEAD~1")
+    monkeypatch.delenv("PR_BODY", raising=False)
+    monkeypatch.setattr(dg, "release_time", lambda *a: datetime.now(tz=UTC) - timedelta(days=2))
+    assert dg.main() == 1  # a vulnerable pin fails every PR, changed or not
+    # the fix: bump to the floor, which is days old but exempt from the age rule
+    (tmp_path / "uv.lock").write_text(CERTIFI.format(certifi="2026.10.19"))
+    git("commit", "-qam", "fix")
+    assert dg.main() == 0
+    # a fresh version above the floor still needs allow-fresh
+    (tmp_path / "uv.lock").write_text(CERTIFI.format(certifi="2026.10.21"))
+    git("commit", "-qam", "newer")
+    assert dg.main() == 1
