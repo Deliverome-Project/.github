@@ -1,0 +1,46 @@
+# Reusable reminder to consider a newer stable Python. Call it from any Deliverome repo:
+#
+#   on:
+#     schedule:
+#       - cron: "0 14 1 * *"  # monthly
+#     workflow_dispatch:
+#   permissions:
+#     contents: read
+#     issues: write
+#   jobs:
+#     python-release:
+#       uses: Deliverome-Project/.github/.github/workflows/python-release-check.yml@<sha>
+#
+# Keeps one open "Python upgrade: ..." issue in the calling repo while it targets an older
+# Python than the newest cycle that is at least `min-age-days` old. See README.md.
+name: python-release-check
+
+on:
+  workflow_call:
+    inputs:
+      min-age-days:
+        type: number
+        default: 90
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  python-release-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: Deliverome-Project/.github
+          ref: main  # issues are the only write; the script on main is the policy in force
+          path: .python-release-check
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Compare the targeted Python with current release cycles
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MIN_CYCLE_AGE_DAYS: ${{ inputs.min-age-days }}
+        run: python .python-release-check/scripts/python_release_check.py
