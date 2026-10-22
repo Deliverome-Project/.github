@@ -308,3 +308,14 @@ def test_apply_writes_cloud_hook_and_keeps_other_settings():
     assert len(settings["hooks"]["SessionStart"]) == 2
     assert st.drift({**files, **out}, STD, "r") == []
     assert st.apply({**files, **out}, STD, "r", set(), set()) == {}  # idempotent
+
+
+def test_cloud_pin_rules(monkeypatch):
+    from datetime import UTC, datetime, timedelta
+    fresh = datetime.now(tz=UTC) - timedelta(days=2)
+    monkeypatch.setattr(st._guard(), "release_time", lambda *a: fresh)
+    import dataclasses
+    on_floor = dataclasses.replace(STD, floors=(st.Floor("pypi", "uv", "0.13.4", "x"),))
+    assert st.cloud_pin_problems(on_floor) == []
+    assert "under 7 days" in st.cloud_pin_problems(dataclasses.replace(STD, uv_cloud="0.13.5"))[0]
+    assert "below" in st.cloud_pin_problems(dataclasses.replace(STD, uv_cloud="0.13.3"))[0]

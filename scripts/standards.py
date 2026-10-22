@@ -680,6 +680,9 @@ def cloud_pin_problems(std: Standards) -> list[str]:
     out = []
     if _pep440(std.uv_cloud) < _pep440(std.uv_minimum):
         out.append(f"[uv] cloud {std.uv_cloud} is below [uv] minimum {std.uv_minimum}")
+    floor = std.floor("pypi", "uv")
+    if floor and _pep440(floor.version) == _pep440(std.uv_cloud):
+        return out  # a security floor is exempt from the age rule, as in the guard
     t = _guard().release_time("pypi", "uv", std.uv_cloud)
     if t and datetime.now(tz=UTC) - t < QUARANTINE:
         out.append(f"[uv] cloud {std.uv_cloud} is under 7 days old: cloud sessions would "

@@ -33,8 +33,8 @@ installs the exact `[uv] cloud` release at session start. The script is rendered
 `managed/claude/ensure-uv.sh` with `MIN` = `[uv] minimum` and `PIN` = `[uv] cloud`, and its
 SessionStart entry is added to `.claude/settings.json` if missing. Repositories keep a reviewed
 copy rather than downloading the script at startup; drift fails a copy that is missing, edited,
-or on other versions. `[uv] cloud` must be at least the minimum and at least 7 days old, or
-fan-out refuses to run.
+or on other versions. `[uv] cloud` must be at least the minimum and at least 7 days old (unless it is
+exactly the uv security floor), or fan-out refuses to run.
 
 **What it refuses.** A branch is reported and left alone when the re-lock moves any package
 other than the floors (a lock that re-resolves, as deliverome-internal's pandas/anndata did),
