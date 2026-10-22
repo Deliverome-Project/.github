@@ -15,6 +15,11 @@ and fails when a PR
    Dependabot's cooldown only covers the package it bumps, not what the lockfile re-resolves;
    Dependabot *security* updates skip the cooldown entirely.
 
+It also fails while any lockfile at HEAD, changed or not, still pins a package below a
+**security floor** (``SECURITY_FLOORS``): a known-vulnerable version that no repo may keep.
+Raising the floors here reaches every calling repo on its next pull request. A version
+that sits exactly on a floor is exempt from the age rule, since the fix may be days old.
+
 Deliberate exceptions are written in the PR description, one per line, so they are reviewed
 and recorded:
 
@@ -87,6 +92,38 @@ def parse_npm(text: str) -> dict[str, tuple[str, str]]:
 
 
 PARSERS = {"pypi": parse_uv, "crates": parse_cargo, "npm": parse_npm}
+
+# ------------------------------------------------------------------------------------------
+# security floors: the lowest version any Deliverome lockfile may pin, with the reason
+# ------------------------------------------------------------------------------------------
+
+# eMudhra intermediate-CA key compromise, 2026-10-19: eight intermediates whose private keys
+# are recoverable. These packages ship their own root store; versions below these trust them.
+# https://blog.cloudflare.com/emudhra-certificate-compromise/
+_EMUDHRA = "eMudhra CA compromise (2026-10-19)"
+SECURITY_FLOORS: dict[tuple[str, str], tuple[str, str]] = {
+    ("pypi", "certifi"): ("2026.10.19", _EMUDHRA),
+    ("pypi", "pip"): ("26.2.2", _EMUDHRA),
+    ("pypi", "uv"): ("0.13.4", _EMUDHRA),
+    ("crates", "webpki-roots"): ("1.0.10", _EMUDHRA),
+    ("crates", "webpki-root-certs"): ("1.0.10", _EMUDHRA),
+    ("crates", "rustls-webpki"): ("0.103.16", _EMUDHRA),
+}
+
+
+def below_floor(head: dict, ecosystem: str) -> list[tuple[str, str, str, str]]:
+    """(name, pinned, floor, reason) for every package pinned below its security floor."""
+    out = []
+    for name, version in sorted(set(head.values())):
+        floor = SECURITY_FLOORS.get((ecosystem, name.lower()))
+        if floor and version_key(ecosystem, version) < version_key(ecosystem, floor[0]):
+            out.append((name, version, *floor))
+    return out
+
+
+def on_floor(ecosystem: str, name: str, version: str) -> bool:
+    floor = SECURITY_FLOORS.get((ecosystem, name.lower()))
+    return bool(floor) and version_key(ecosystem, version) == version_key(ecosystem, floor[0])
 
 # ------------------------------------------------------------------------------------------
 # version ordering
@@ -215,11 +252,13 @@ def main() -> int:
 
     for path, eco in lockfiles():
         head_text = Path(path).read_text()
+        parse = PARSERS[eco]
+        for name, version, floor, reason in below_floor(parse(head_text), eco):
+            errors.append(f"{path}: {name} {version} is below the security floor {floor} ({reason})")
         base = _git("show", f"{base_ref}:{path}")
         if base.returncode != 0:
             notes.append(f"{path}: new lockfile, skipped (no base to compare)")
             continue
-        parse = PARSERS[eco]
         down, changed = compare(parse(base.stdout), parse(head_text), eco)
         for name, old, new in down:
             ok = name.lower() in allow_down
@@ -234,7 +273,7 @@ def main() -> int:
                 unknown += 1
                 continue
             age = now - t
-            if age < min_age:
+            if age < min_age and not on_floor(eco, name, version):
                 ok = name.lower() in allow_fresh
                 line = f"{path}: {name} {version} is {age.total_seconds() / 86400:.1f} days old"
                 (notes if ok else errors).append(line + (" (allowed)" if ok else ""))
@@ -254,6 +293,9 @@ def main() -> int:
     for e in errors:
         print(f"::error::{e}")
     print()
+    print("A security floor means a known-vulnerable version: upgrade it, e.g.")
+    print("`uv lock --upgrade-package certifi`. Floors and their reasons are SECURITY_FLOORS in")
+    print("Deliverome-Project/.github scripts/dependency_guard.py.")
     print("Downgrades usually mean a new or re-pinned dependency caps a version and the resolver")
     print("went backwards. Fresh versions are held for a week as supply-chain protection. If the")
     print("change is intended, add `allow-downgrade: <name>` or `allow-fresh: <name>` to the PR")
