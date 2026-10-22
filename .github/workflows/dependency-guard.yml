@@ -32,7 +32,7 @@ jobs:
           path: .dependency-guard
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.14"
       - name: Check lockfiles for downgrades and versions under ${{ inputs.min-age-days }} days old
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}

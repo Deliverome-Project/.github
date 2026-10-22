@@ -92,3 +92,32 @@ repo's `.pre-commit-config.yaml`:
 ```
 
 and make sure contributors run `pre-commit install --hook-type pre-push`.
+
+## Python release reminder
+
+A reusable workflow that keeps one open issue, titled `Python upgrade: ...`, in the calling
+repository while it targets an older Python than the newest release cycle that is at least
+90 days old, or while its own cycle is under a year from end of life. The 90 days give
+compiled scientific packages time to publish wheels: tiledbsoma still had none for 3.14 a
+year after 3.14.0. The target is read from `.python-version`, then ruff's `target-version`,
+then the `requires-python` floor; release dates come from endoflife.date. The issue lists the
+cycles' support dates, every pin found, and a checklist for the move.
+
+```yaml
+# .github/workflows/python-release-check.yml in the calling repo
+name: python-release-check
+on:
+  schedule:
+    - cron: "0 14 1 * *"  # monthly
+  workflow_dispatch:
+permissions:
+  contents: read
+  issues: write
+jobs:
+  python-release:
+    uses: Deliverome-Project/.github/.github/workflows/python-release-check.yml@<commit sha>
+```
+
+```bash
+python scripts/python_release_check.py --dry-run --root ../some-repo
+```
