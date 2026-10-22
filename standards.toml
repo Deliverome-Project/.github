@@ -14,6 +14,10 @@ version = "3.14"
 [uv]
 # Lowest uv allowed in `[tool.uv] required-version` and in setup-uv `version:` pins.
 minimum = "0.13.4"
+# The exact uv that Claude Code cloud sessions install at startup (their image ships an older
+# one): PIN in each repo's .claude/hooks/ensure-uv.sh, rendered from
+# managed/claude/ensure-uv.sh. At least `minimum`, and at least 7 days old.
+cloud = "0.13.4"
 
 # Security floors: the lowest version any lockfile may pin. A version exactly on its floor
 # is exempt from the 7-day age rule, since the fix may be days old. `ecosystem` is pypi,
@@ -65,11 +69,13 @@ reason = "tiledbsoma publishes no Python 3.14 wheels yet"
 # Which branches count as long-lived is discovered, not listed: the default branch, every
 # protected branch, every branch a ruleset covers, and every branch that was the base of at
 # least `min_merged_prs` merged pull requests in the last `window_days` (this is what finds
-# an unprotected integration branch such as agentflow `dev`). Add or drop branches here as
+# an unprotected integration branch that PRs merge into). Add or drop branches here as
 # "repo:branch" when discovery gets one wrong.
 [discovery]
 org = "Deliverome-Project"
 window_days = 90
 min_merged_prs = 2
 include = []
-exclude = []
+# agentflow dev is being retired (2026-10-22): main is the only long-lived branch; drop this
+# entry once dev is deleted.
+exclude = ["agentflow:dev"]

@@ -105,6 +105,7 @@ def test_main_end_to_end(tmp_path, monkeypatch):
     git("commit", "-qm", "head")
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("BASE_SHA", "HEAD~1")
+    monkeypatch.setenv("CHECK_STANDARDS", "false")  # drift has its own tests
     monkeypatch.setattr(dg, "release_time", lambda *a: datetime.now(tz=UTC) - timedelta(days=400))
     assert dg.main() == 1  # silent downgrade fails
     monkeypatch.setenv("PR_BODY", "allow-downgrade: pandas")

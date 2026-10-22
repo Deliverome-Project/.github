@@ -6,7 +6,10 @@ Three uses, one source of truth (``standards.toml`` at the repository root):
     Fails when a checkout disagrees with the standard: the ``requires-python`` floor,
     ``.python-version``, ruff ``target-version``, mypy ``python_version``, ``setup-python``
     versions and CI matrices, ``[tool.uv] required-version``, or a ``setup-uv`` ``version:``
-    pin. Lockfile floors are the guard's own check.
+    pin, and in any repository with a ``uv.lock`` the managed Claude Code cloud hook
+    (``.claude/hooks/ensure-uv.sh``, rendered from ``managed/claude/ensure-uv.sh`` with the
+    standard's uv versions, plus its SessionStart entry in ``.claude/settings.json``). Lockfile
+    floors are the guard's own check.
 
 ``report`` (weekly, and before a fan-out)
     Discovers every long-lived branch of every Python repository in the org and checks each
@@ -23,7 +26,7 @@ Three uses, one source of truth (``standards.toml`` at the repository root):
 
 Long-lived branches are found, not listed: the default branch, protected branches, branches a
 ruleset covers, and branches that were the base of ``min_merged_prs`` merged pull requests in
-the last ``window_days`` (an unprotected integration branch such as agentflow ``dev``).
+the last ``window_days`` (an unprotected integration branch that PRs merge into).
 
 Standard library only (Python >= 3.11); ``gh`` does the GitHub calls, with its own auth or
 ``GH_TOKEN``.
@@ -49,9 +52,23 @@ from pathlib import Path, PurePosixPath
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_STANDARDS = HERE.parent / "standards.toml"
+# Claude Code cloud sessions ship an older uv than required-version allows; this hook installs
+# the standard's. Managed: the template lives beside standards.toml and every copy must match.
+HOOK = ".claude/hooks/ensure-uv.sh"
+SETTINGS = ".claude/settings.json"
+HOOK_TEMPLATE = "managed/claude/ensure-uv.sh"
+HOOK_ENTRY = {"matcher": "startup|resume", "hooks": [
+    {"type": "command", "command": 'bash "$CLAUDE_PROJECT_DIR"/.claude/hooks/ensure-uv.sh',
+     "timeout": 180}]}
 QUARANTINE = timedelta(days=7)
 # repository-local age checks that fan-out runs after re-locking
 AGE_CHECKS = ("scripts/check-fresh-deps.py", "scripts/check_dependency_age.py")
+# fan-out checks out only what it reads, writes or locks (data-heavy repos take many minutes
+# to clone in full): configuration, lockfiles, scripts and package sources
+SPARSE = ["/*", "/.github/", "/.claude/", "/scripts/", "/src/", "/python/", "/crates/",
+          *(f"**/{n}" for n in ("pyproject.toml", "uv.lock", ".python-version", "ruff.toml",
+                                ".ruff.toml", "Cargo.toml", "Cargo.lock", "package-lock.json",
+                                "README.md", "LICENSE"))]
 
 
 def _guard():
@@ -82,6 +99,13 @@ class Standards:
     floors: tuple[Floor, ...]
     exceptions: tuple[dict, ...]
     discovery: dict
+    uv_cloud: str = ""
+    hook_template: str = ""
+
+    def ensure_uv(self) -> str:
+        """The managed ensure-uv.sh, with this standard's uv versions filled in."""
+        return (self.hook_template.replace("@UV_MIN@", self.uv_minimum)
+                .replace("@UV_PIN@", self.uv_cloud or self.uv_minimum))
 
     def python_for(self, repo: str, path: str) -> str:
         """The Python X.Y a file in ``repo`` must target, honouring [[exceptions]]."""
@@ -106,12 +130,15 @@ def load(path: Path | str | None = None) -> Standards:
         Floor(f["ecosystem"], f["package"].lower(), f["version"], f["reason"])
         for f in data.get("floors", [])
     )
+    template = path.parent / HOOK_TEMPLATE
     return Standards(
         python=data["python"]["version"],
         uv_minimum=data["uv"]["minimum"],
         floors=floors,
         exceptions=tuple(data.get("exceptions", [])),
         discovery=data.get("discovery", {}),
+        uv_cloud=data["uv"].get("cloud", data["uv"]["minimum"]),
+        hook_template=template.read_text() if template.exists() else "",
     )
 
 
@@ -145,7 +172,8 @@ def relevant(path: str) -> bool:
     name = PurePosixPath(path).name
     if path.startswith(".github/workflows/") and name.endswith((".yml", ".yaml")):
         return True
-    return name in {"pyproject.toml", ".python-version", "ruff.toml", ".ruff.toml"}
+    return path in {HOOK, SETTINGS} or name in {"pyproject.toml", ".python-version", "ruff.toml",
+                                                ".ruff.toml"}
 
 
 def _line_of(text: str, pos: int) -> int:
@@ -162,6 +190,8 @@ PY_SCALAR = re.compile(r'(?m)^(\s*-?\s*python(?:-version)?:\s*)(["\']?)(3\.\d+)(
 PY_FLOW = re.compile(r'(?m)^(\s*python(?:-version)?:\s*)\[([^\]]*)\]')
 # matrix block list: key on its own line, then `- "3.11"` items
 PY_BLOCK = re.compile(r'(?m)^(\s*)python(?:-version)?:\s*\n((?:\1\s+-\s*["\']?3\.\d+["\']?\s*\n)+)')
+# a Python named on a command line: `uv sync --python 3.12`, `uv python install 3.12`
+PY_CLI = re.compile(r"(--python[ =]|\buv python install )(3\.\d+)\b")
 SETUP_UV = re.compile(r"(?m)^(\s*)-?\s*uses:\s*astral-sh/setup-uv@.*$")
 
 
@@ -254,6 +284,10 @@ def drift_workflow(path: str, text: str, std: Standards, repo: str) -> list[Find
         if found != [want]:
             out.append(Finding(path, _line_of(text, m.start()), "Python matrix",
                                ", ".join(found), want))
+    for m in PY_CLI.finditer(text):
+        if m.group(2) != want:
+            out.append(Finding(path, _line_of(text, m.start()), "Python on a command line",
+                               m.group(2), want))
     for start, _, version in _setup_uv_versions(text):
         if _pep440(version) < _pep440(std.uv_minimum):
             out.append(Finding(path, _line_of(text, start), "setup-uv version", version,
@@ -261,11 +295,37 @@ def drift_workflow(path: str, text: str, std: Standards, repo: str) -> list[Find
     return out
 
 
+def _has_hook_entry(settings_text: str) -> bool:
+    try:
+        entries = json.loads(settings_text).get("hooks", {}).get("SessionStart", [])
+    except (ValueError, AttributeError):
+        return False
+    return any(HOOK in h.get("command", "") for e in entries for h in e.get("hooks", []))
+
+
+def drift_cloud_hook(files: dict[str, str], std: Standards) -> list[Finding]:
+    if not std.hook_template:
+        return []
+    out = []
+    if HOOK not in files:
+        out.append(Finding(HOOK, 1, "cloud uv hook", "missing", f"managed copy (uv {std.uv_cloud})"))
+    elif files[HOOK] != std.ensure_uv():
+        pins = dict(re.findall(r"(?m)^(MIN|PIN)=([\d.]+)", files[HOOK]))
+        found = (f"MIN={pins.get('MIN', '?')} PIN={pins.get('PIN', '?')}"
+                 if pins != {"MIN": std.uv_minimum, "PIN": std.uv_cloud}
+                 else "edited away from the managed copy")
+        out.append(Finding(HOOK, 1, "cloud uv hook", found,
+                           f"managed copy, MIN={std.uv_minimum} PIN={std.uv_cloud}"))
+    if not _has_hook_entry(files.get(SETTINGS, "{}")):
+        out.append(Finding(SETTINGS, 1, "SessionStart hook for ensure-uv.sh", "missing", "present"))
+    return out
+
+
 def drift(files: dict[str, str], std: Standards, repo: str) -> list[Finding]:
     """Every disagreement between ``files`` ({path: text}) and the standard."""
     has_lock_paths = {str(PurePosixPath(p).parent) for p in files
                       if PurePosixPath(p).name == "uv.lock"}
-    out: list[Finding] = []
+    out: list[Finding] = drift_cloud_hook(files, std) if has_lock_paths else []
     for path, text in sorted(files.items()):
         name = PurePosixPath(path).name
         if path.startswith(".github/workflows/") and name.endswith((".yml", ".yaml")):
@@ -286,8 +346,8 @@ def local_files(root: Path) -> dict[str, str]:
                              check=True).stdout.splitlines()
     out = {}
     for p in tracked:
-        if relevant(p) or PurePosixPath(p).name == "uv.lock":
-            out[p] = (root / p).read_text()
+        if (relevant(p) or PurePosixPath(p).name == "uv.lock") and (root / p).exists():
+            out[p] = (root / p).read_text()  # exists: a sparse checkout lists absent files
     return out
 
 
@@ -376,6 +436,7 @@ def rewrite_workflow(text: str, want: str, uv_min: str) -> str:
         return m.group(0).replace(m.group(2), re.sub(r"3\.\d+", want, first))
 
     text = PY_BLOCK.sub(block, text)
+    text = PY_CLI.sub(lambda m: m.group(1) + want, text)
     for _, vstart, version in sorted(_setup_uv_versions(text), reverse=True):
         if _pep440(version) < _pep440(uv_min):
             text = text[:vstart] + uv_min + text[vstart + len(version):]
@@ -392,8 +453,17 @@ def apply(files: dict[str, str], std: Standards, repo: str, add_fresh: set[str],
     locked = {str(PurePosixPath(p).parent): {n.lower() for n, _ in dg.parse_uv(t).values()}
               for p, t in files.items() if PurePosixPath(p).name == "uv.lock"}
     out = {}
+    if locked and std.hook_template:
+        if files.get(HOOK) != std.ensure_uv():
+            out[HOOK] = std.ensure_uv()
+        if not _has_hook_entry(files.get(SETTINGS, "{}")):
+            settings = json.loads(files.get(SETTINGS) or "{}")
+            settings.setdefault("hooks", {}).setdefault("SessionStart", []).append(HOOK_ENTRY)
+            out[SETTINGS] = json.dumps(settings, indent=2) + "\n"
     for path, text in files.items():
         name = PurePosixPath(path).name
+        if path in {HOOK, SETTINGS}:
+            continue
         want = std.python_for(repo, path)
         if path.startswith(".github/workflows/") and name.endswith((".yml", ".yaml")):
             new = rewrite_workflow(text, want, std.uv_minimum)
@@ -605,6 +675,18 @@ def quarantine_sets(std: Standards, ages) -> tuple[set[str], set[str]]:
     return fresh, expired
 
 
+def cloud_pin_problems(std: Standards) -> list[str]:
+    """The cloud uv pin must be at least the minimum and out of its 7-day quarantine."""
+    out = []
+    if _pep440(std.uv_cloud) < _pep440(std.uv_minimum):
+        out.append(f"[uv] cloud {std.uv_cloud} is below [uv] minimum {std.uv_minimum}")
+    t = _guard().release_time("pypi", "uv", std.uv_cloud)
+    if t and datetime.now(tz=UTC) - t < QUARANTINE:
+        out.append(f"[uv] cloud {std.uv_cloud} is under 7 days old: cloud sessions would "
+                   "install an unquarantined uv")
+    return out
+
+
 def stale_exceptions(files: dict[str, str], expired: set[str]) -> list[str]:
     out = []
     for path, text in files.items():
@@ -648,6 +730,8 @@ def report_target(org: str, t: Target, std: Standards, expired: set[str]) -> dic
 def cmd_report(args, std: Standards) -> int:
     org = std.discovery.get("org", "Deliverome-Project")
     targets = discover(std, args.repo, log=lambda m: print(m, file=sys.stderr))
+    for problem in cloud_pin_problems(std):
+        print(f"warn: {problem}", file=sys.stderr)
     _, expired = quarantine_sets(std, floor_ages(std))
     with ThreadPoolExecutor(max_workers=4) as pool:
         results = list(pool.map(lambda t: report_target(org, t, std, expired), targets))
@@ -757,15 +841,20 @@ def fanout_target(org: str, t: Target, std: Standards, fresh: set[str], expired:
                   workdir: Path, dry_run: bool, std_rev: str) -> Plan:
     plan = Plan(t)
     root = workdir / f"{t.repo}@{t.branch.replace('/', '_')}"
+    lfs = {**os.environ, "GIT_LFS_SKIP_SMUDGE": "1"}
     r = subprocess.run(["gh", "repo", "clone", f"{org}/{t.repo}", str(root), "--", "--depth", "1",
-                        "--single-branch", "--branch", t.branch, "-q"],
-                       capture_output=True, text=True, env={**os.environ, "GIT_LFS_SKIP_SMUDGE": "1"})
+                        "--single-branch", "--branch", t.branch, "--filter=blob:none",
+                        "--sparse", "-q"], capture_output=True, text=True, env=lfs)
+    if r.returncode == 0:
+        r = subprocess.run(["git", "sparse-checkout", "set", "--no-cone", *SPARSE], cwd=root,
+                           capture_output=True, text=True, env=lfs)
     if r.returncode != 0:
         plan.refusals.append(f"clone failed: {r.stderr.strip()}")
         return plan
     files = local_files(root)
     edits = apply(files, std, t.repo, fresh, expired)
     for path, text in edits.items():
+        (root / path).parent.mkdir(parents=True, exist_ok=True)
         (root / path).write_text(text)
         plan.edits.append(path)
     pyprojects = {p for p in edits if PurePosixPath(p).name == "pyproject.toml"}
@@ -855,6 +944,10 @@ def cmd_fanout(args, std: Standards) -> int:
     targets = discover(std, args.repo, log=lambda m: print(m, file=sys.stderr))
     if args.branch:
         targets = [t for t in targets if t.branch in args.branch]
+    problems = cloud_pin_problems(std)
+    if problems:
+        print("\n".join(f"Refusing: {x}" for x in problems))
+        return 1
     print("Long-lived branches found:")
     for t in targets:
         print(f"- {t.repo}:{t.branch} ({'; '.join(t.reasons)})")

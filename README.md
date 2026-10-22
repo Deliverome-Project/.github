@@ -27,6 +27,15 @@ and lockfiles below a floor (`uv lock --upgrade-package <pkg>==<floor>`, `cargo 
 }` to the projects whose lock contains it, so `exclude-newer = "7 days"` lets uv pick it; once
 the floor is a week old the next fan-out removes that exception.
 
+It also keeps the Claude Code cloud hook in every repository with a `uv.lock`: cloud sessions
+ship an older uv than `required-version` allows, so `.claude/hooks/ensure-uv.sh` (no-op locally)
+installs the exact `[uv] cloud` release at session start. The script is rendered from
+`managed/claude/ensure-uv.sh` with `MIN` = `[uv] minimum` and `PIN` = `[uv] cloud`, and its
+SessionStart entry is added to `.claude/settings.json` if missing. Repositories keep a reviewed
+copy rather than downloading the script at startup; drift fails a copy that is missing, edited,
+or on other versions. `[uv] cloud` must be at least the minimum and at least 7 days old, or
+fan-out refuses to run.
+
 **What it refuses.** A branch is reported and left alone when the re-lock moves any package
 other than the floors (a lock that re-resolves, as deliverome-internal's pandas/anndata did),
 when `uv lock --check`, the repository's own age check (`scripts/check-fresh-deps.py`,
@@ -40,7 +49,7 @@ that already touch the same files.
 **Which branches.** Discovered on every run, never listed: each Python repository's default
 branch, protected branches, branches a ruleset covers, and any branch that was the base of at
 least two merged pull requests in the last 90 days, which is what finds an unprotected
-integration branch such as agentflow `dev`. `[discovery] include` / `exclude` in
+integration branch such as a `dev` that PRs merge into. `[discovery] include` / `exclude` in
 `standards.toml` correct it by hand.
 
 **Exceptions.** A project that must stay on another Python is an `[[exceptions]]` entry with

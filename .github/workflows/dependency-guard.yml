@@ -40,7 +40,9 @@ jobs:
           repository: Deliverome-Project/.github
           ref: main  # the standard in force: editing standards.toml needs no tag move
           path: .standards
-          sparse-checkout: standards.toml
+          sparse-checkout: |
+            standards.toml
+            managed/
           sparse-checkout-cone-mode: false
       - uses: actions/setup-python@v5
         with:

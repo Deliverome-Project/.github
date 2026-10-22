@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -22,7 +23,11 @@ STD = st.Standards(
     exceptions=({"repo": "deliverome-internal", "path": "envs/census", "python": "3.13",
                  "reason": "tiledbsoma"},),
     discovery={},
+    uv_cloud="0.13.4",
+    hook_template=(ROOT / "managed" / "claude" / "ensure-uv.sh").read_text(),
 )
+SETTINGS_OK = json.dumps({"hooks": {"SessionStart": [st.HOOK_ENTRY]}})
+CLOUD = {st.HOOK: STD.ensure_uv(), st.SETTINGS: SETTINGS_OK}
 
 PYPROJECT = """[project]
 name = "x"
@@ -84,7 +89,7 @@ def test_exception_covers_path_and_below_only():
 
 def test_drift_finds_every_pin():
     files = {"pyproject.toml": PYPROJECT, "uv.lock": lock(), ".python-version": "3.12\n",
-             ".github/workflows/ci.yml": WORKFLOW}
+             ".github/workflows/ci.yml": WORKFLOW, **CLOUD}
     found = {(f.path, f.what, f.found) for f in st.drift(files, STD, "agentflow")}
     assert found == {
         ("pyproject.toml", "requires-python floor", "3.12"),
@@ -101,7 +106,7 @@ def test_drift_finds_every_pin():
 def test_missing_required_version_only_matters_with_a_lock():
     text = '[project]\nrequires-python = ">=3.14"\n'
     assert st.drift({"pyproject.toml": text}, STD, "r") == []
-    found = st.drift({"pyproject.toml": text, "uv.lock": lock()}, STD, "r")
+    found = st.drift({"pyproject.toml": text, "uv.lock": lock(), **CLOUD}, STD, "r")
     assert [(f.what, f.found) for f in found] == [("uv required-version", "missing")]
 
 
@@ -109,7 +114,7 @@ def test_conforming_tree_and_exception_have_no_drift():
     census = PYPROJECT.replace(">=3.12", ">=3.13,<3.14").replace("0.11.10", "0.13.4") \
         .replace("py312", "py313")
     files = {"envs/census/pyproject.toml": census, "envs/census/uv.lock": lock(),
-             "envs/census/.python-version": "3.13\n"}
+             "envs/census/.python-version": "3.13\n", **CLOUD}
     assert st.drift(files, STD, "deliverome-internal") == []
     assert st.drift(files, STD, "flashdia")  # the exception is per repository
 
@@ -142,7 +147,7 @@ def test_rewrite_pyproject_and_quarantine_exceptions():
     assert "exclude-newer-package = { torch = false }" in after
     gone = st.rewrite_pyproject(out, "3.14", "0.13.4", True, set(), {"certifi"})
     assert "exclude-newer-package" not in gone
-    assert st.drift({"pyproject.toml": out, "uv.lock": lock()}, STD, "r") == []
+    assert st.drift({"pyproject.toml": out, "uv.lock": lock(), **CLOUD}, STD, "r") == []
 
 
 def test_rewrite_pyproject_adds_required_version_when_missing():
@@ -195,7 +200,7 @@ def test_ruleset_branches(include, exclude, expect):
 
 
 def test_discover_finds_unprotected_integration_branch(monkeypatch):
-    """agentflow dev: unprotected, not default, but the base of merged PRs."""
+    """An unprotected, non-default integration branch that PRs merge into is found."""
     def fake_gh(*args, check=True):
         a = " ".join(args)
         if "git/trees/main" in a:
@@ -206,7 +211,7 @@ def test_discover_finds_unprotected_integration_branch(monkeypatch):
 
     def fake_lines(path, jq):
         if path.startswith("orgs/"):
-            return ["agentflow main"]
+            return ["somerepo main"]
         if "protected=true" in path:
             return ["main"]
         if "/branches" in path:
@@ -215,8 +220,8 @@ def test_discover_finds_unprotected_integration_branch(monkeypatch):
 
     monkeypatch.setattr(st, "gh", fake_gh)
     monkeypatch.setattr(st, "gh_lines", fake_lines)
-    std = st.Standards("3.14", "0.13.4", (), (), {"min_merged_prs": 2, "include": ["agentflow:x"],
-                                                  "exclude": ["agentflow:x"]})
+    std = st.Standards("3.14", "0.13.4", (), (), {"min_merged_prs": 2, "include": ["somerepo:x"],
+                                                  "exclude": ["somerepo:x"]})
     got = {t.branch: t.reasons for t in st.discover(std, log=lambda m: None)}
     assert set(got) == {"main", "dev"}
     assert got["main"][:2] == ["default", "protected"]
@@ -251,3 +256,55 @@ def test_guard_reads_floors_and_reports_drift(tmp_path, monkeypatch):
 def test_stale_check_names():
     checks = ["test (3.14)", "test (3.12)", "lint", "guard / dependency-guard", "py 3.13 + 3.14"]
     assert st.stale_check_names(checks, "3.14") == ["test (3.12)", "py 3.13 + 3.14"]
+
+
+def test_python_on_command_lines():
+    text = ("      - run: uv sync --locked --python 3.12\n"
+            "      - run: uv python install 3.12\n"
+            "      - run: uv sync --python ${{ matrix.python }}\n"
+            "      - run: uv run --python=3.12 x\n")
+    found = st.drift({".github/workflows/ci.yml": text}, STD, "r")
+    assert [(f.what, f.line) for f in found] == [("Python on a command line", 1),
+                                                 ("Python on a command line", 2),
+                                                 ("Python on a command line", 4)]
+    out = st.rewrite_workflow(text, "3.14", "0.13.4")
+    assert "--python 3.14" in out and "install 3.14" in out and "--python=3.14" in out
+    assert st.drift({".github/workflows/ci.yml": out}, STD, "r") == []
+
+
+def test_cloud_hook_template_renders_both_pins():
+    assert "@UV_" not in STD.ensure_uv()
+    assert "\nMIN=0.13.4\n" in STD.ensure_uv() and "\nPIN=0.13.4  #" in STD.ensure_uv()
+    shipped = st.load(ROOT / "standards.toml")
+    assert f"\nPIN={shipped.uv_cloud}  #" in shipped.ensure_uv()
+
+
+def test_cloud_hook_drift():
+    base = {"pyproject.toml": '[project]\nrequires-python = ">=3.14"\n[tool.uv]\n'
+            'required-version = ">=0.13.4"\n', "uv.lock": lock()}
+    assert st.drift({**base, **CLOUD}, STD, "r") == []
+    assert st.drift({"pyproject.toml": base["pyproject.toml"]}, STD, "r") == []  # no uv, no hook
+    missing = st.drift(base, STD, "r")
+    assert [(f.path, f.found) for f in missing] == [(st.HOOK, "missing"), (st.SETTINGS, "missing")]
+    old = STD.ensure_uv().replace("PIN=0.13.4", "PIN=0.13.3")
+    found = st.drift({**base, **CLOUD, st.HOOK: old}, STD, "r")
+    assert [f.found for f in found] == ["MIN=0.13.4 PIN=0.13.3"]
+    edited = STD.ensure_uv() + "echo hi\n"
+    assert [f.found for f in st.drift({**base, **CLOUD, st.HOOK: edited}, STD, "r")] == [
+        "edited away from the managed copy"]
+    other_hook = json.dumps({"hooks": {"SessionStart": [{"hooks": [{"command": "x.sh"}]}]}})
+    assert st.drift({**base, **CLOUD, st.SETTINGS: other_hook}, STD, "r")
+
+
+def test_apply_writes_cloud_hook_and_keeps_other_settings():
+    files = {"pyproject.toml": '[project]\nrequires-python = ">=3.14"\n[tool.uv]\n'
+             'required-version = ">=0.13.4"\n', "uv.lock": lock(),
+             st.SETTINGS: json.dumps({"permissions": {"allow": ["Bash(ls)"]},
+                                      "hooks": {"SessionStart": [{"hooks": [{"command": "x"}]}]}})}
+    out = st.apply(files, STD, "r", set(), set())
+    assert out[st.HOOK] == STD.ensure_uv()
+    settings = json.loads(out[st.SETTINGS])
+    assert settings["permissions"] == {"allow": ["Bash(ls)"]}
+    assert len(settings["hooks"]["SessionStart"]) == 2
+    assert st.drift({**files, **out}, STD, "r") == []
+    assert st.apply({**files, **out}, STD, "r", set(), set()) == {}  # idempotent
