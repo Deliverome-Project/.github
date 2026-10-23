@@ -521,8 +521,12 @@ def gh(*args: str, check: bool = True, stdin: str | None = None) -> str:
     # reads are retried: the connection to GitHub drops often enough to lose a whole run
     tries = 1 if stdin is not None or "-X" in args else 3
     for attempt in range(tries):
-        r = subprocess.run(["gh", *args], capture_output=True, text=True, check=False,
-                           input=stdin)
+        try:
+            r = subprocess.run(["gh", *args], capture_output=True, text=True, check=False,
+                               input=stdin, timeout=GH_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            r = subprocess.CompletedProcess(args, 1, "", f"timed out after {GH_TIMEOUT}s")
+            continue
         if r.returncode == 0 or "404" in r.stderr or "403" in r.stderr:
             break
     if check and r.returncode != 0:
@@ -609,6 +613,7 @@ def discover(std: Standards, repos: list[str] | None = None, log=print) -> list[
 
 
 LOCK_NAMES = {"uv.lock", "Cargo.lock", "package-lock.json"}
+GH_TIMEOUT = 120  # seconds per gh call; a dropped connection otherwise hangs the whole run
 
 
 def head_sha(org: str, repo: str, branch: str) -> str:
