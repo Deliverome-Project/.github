@@ -905,6 +905,7 @@ def fanout_target(org: str, t: Target, std: Standards, fresh: set[str], expired:
     _run(["git", "add", "-A"], root)  # so files fan-out created count as tracked
     pyprojects = {p for p in edits if PurePosixPath(p).name == "pyproject.toml"}
     plan.fresh = relock(root, std, plan, pyprojects) & fresh
+    plan.edits += [f for f in changed_files(root) if f not in plan.edits]  # re-written locks
     remaining = drift(local_files(root), std, t.repo)
     plan.refusals += [f"still drifts after rewriting (fix by hand): {f}" for f in remaining]
     if not plan.changed:
