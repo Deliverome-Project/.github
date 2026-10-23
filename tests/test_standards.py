@@ -319,3 +319,32 @@ def test_cloud_pin_rules(monkeypatch):
     assert st.cloud_pin_problems(on_floor) == []
     assert "under 7 days" in st.cloud_pin_problems(dataclasses.replace(STD, uv_cloud="0.13.5"))[0]
     assert "below" in st.cloud_pin_problems(dataclasses.replace(STD, uv_cloud="0.13.3"))[0]
+
+
+def test_fanout_target_end_to_end_dry_run(tmp_path, monkeypatch):
+    """The whole per-branch path, with the GitHub reads faked: snapshot -> scratch repo ->
+    rewrite -> checks, and nothing pushed."""
+    snapshot = {"pyproject.toml": '[project]\nname = "x"\nrequires-python = ">=3.12"\n',
+                ".python-version": "3.12\n",
+                ".github/workflows/ci.yml": "jobs:\n  t:\n    steps:\n"
+                                           "      - run: uv sync --python 3.12\n"}
+    monkeypatch.setattr(st, "head_sha", lambda *a: "abc123")
+    monkeypatch.setattr(st, "remote_files", lambda *a, **k: dict(snapshot))
+    monkeypatch.setattr(st, "required_checks", lambda *a: ["test (3.12)"])
+    monkeypatch.setattr(st, "open_prs_touching", lambda *a: [])
+    pushed = []
+    monkeypatch.setattr(st, "open_pr", lambda *a: pushed.append(a))
+    monkeypatch.setenv("STANDARDS_FILE", str(ROOT / "standards.toml"))
+    t = st.Target("r", "main", ["default"])
+    plan = st.fanout_target("org", t, STD, set(), set(), tmp_path, True, "deadbeef")
+    assert plan.refusals == []
+    assert sorted(plan.edits) == [".github/workflows/ci.yml", ".python-version", "pyproject.toml"]
+    assert "shared dependency guard passed" in plan.checks
+    assert any("test (3.12)" in n for n in plan.notes)
+    assert pushed == [] and plan.base_sha == "abc123"
+    root = tmp_path / "r@main"
+    assert (root / ".python-version").read_text() == "3.14\n"
+    assert sorted(st.changed_files(root)) == sorted(plan.edits)
+    # the same run without --dry-run reaches open_pr
+    plan = st.fanout_target("org", t, STD, set(), set(), tmp_path / "2", False, "deadbeef")
+    assert len(pushed) == 1

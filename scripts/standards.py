@@ -63,12 +63,9 @@ HOOK_ENTRY = {"matcher": "startup|resume", "hooks": [
 QUARANTINE = timedelta(days=7)
 # repository-local age checks that fan-out runs after re-locking
 AGE_CHECKS = ("scripts/check-fresh-deps.py", "scripts/check_dependency_age.py")
-# fan-out checks out only what it reads, writes or locks (data-heavy repos take many minutes
-# to clone in full): configuration, lockfiles, scripts and package sources
-SPARSE = ["/*", "/.github/", "/.claude/", "/scripts/", "/src/", "/python/", "/crates/",
-          *(f"**/{n}" for n in ("pyproject.toml", "uv.lock", ".python-version", "ruff.toml",
-                                ".ruff.toml", "Cargo.toml", "Cargo.lock", "package-lock.json",
-                                "README.md", "LICENSE"))]
+# Fan-out never clones: it reads the few files it needs through the API into a scratch git
+# repository (data-heavy repositories took hours to clone over a dropping connection), and
+# writes its commit back through the Git Data API.
 
 
 def _guard():
@@ -520,8 +517,14 @@ def lock_changes(old: str, new: str, ecosystem: str, targets: set[str]):
 # ------------------------------------------------------------------------------------------
 
 
-def gh(*args: str, check: bool = True) -> str:
-    r = subprocess.run(["gh", *args], capture_output=True, text=True, check=False)
+def gh(*args: str, check: bool = True, stdin: str | None = None) -> str:
+    # reads are retried: the connection to GitHub drops often enough to lose a whole run
+    tries = 1 if stdin is not None or "-X" in args else 3
+    for attempt in range(tries):
+        r = subprocess.run(["gh", *args], capture_output=True, text=True, check=False,
+                           input=stdin)
+        if r.returncode == 0 or "404" in r.stderr or "403" in r.stderr:
+            break
     if check and r.returncode != 0:
         raise RuntimeError(f"gh {' '.join(args)}: {r.stderr.strip()}")
     return r.stdout if r.returncode == 0 else ""
@@ -605,18 +608,36 @@ def discover(std: Standards, repos: list[str] | None = None, log=print) -> list[
     return [t for t in targets if f"{t.repo}:{t.branch}" not in drop]
 
 
-def remote_files(org: str, repo: str, branch: str) -> dict[str, str]:
-    """Relevant files plus lockfiles of a branch, read through the API (no clone)."""
-    tree = gh("api", f"repos/{org}/{repo}/git/trees/{branch}?recursive=1", "--jq",
-              '.tree[] | select(.type == "blob") | .path').splitlines()
-    wanted = [p for p in tree if relevant(p) or PurePosixPath(p).name in {"uv.lock", "Cargo.lock"}]
+LOCK_NAMES = {"uv.lock", "Cargo.lock", "package-lock.json"}
+
+
+def head_sha(org: str, repo: str, branch: str) -> str:
+    return gh("api", f"repos/{org}/{repo}/commits/{branch}", "--jq", ".sha").strip()
+
+
+def tree_modes(org: str, repo: str, ref: str) -> dict[str, str]:
+    """{path: mode} for every file at ``ref``."""
+    rows = gh("api", f"repos/{org}/{repo}/git/trees/{ref}?recursive=1", "--jq",
+              '.tree[] | select(.type == "blob") | "\\(.mode) \\(.path)"').splitlines()
+    return {row.split(" ", 1)[1]: row.split(" ", 1)[0] for row in rows}
+
+
+def remote_files(org: str, repo: str, ref: str, for_fanout: bool = False) -> dict[str, str]:
+    """Relevant files plus lockfiles at ``ref``, read through the API (no clone). For a
+    fan-out, also what re-locking and the repository's own checks read."""
+    def wanted(p: str) -> bool:
+        if relevant(p) or PurePosixPath(p).name in LOCK_NAMES:
+            return True
+        return for_fanout and (p in AGE_CHECKS or p == "renv.lock")
+
+    paths = [p for p in tree_modes(org, repo, ref) if wanted(p)]
 
     def fetch(p):
-        return p, gh("api", f"repos/{org}/{repo}/contents/{p}?ref={branch}",
+        return p, gh("api", f"repos/{org}/{repo}/contents/{p}?ref={ref}",
                      "-H", "Accept: application/vnd.github.raw")
 
     with ThreadPoolExecutor(max_workers=8) as pool:
-        return dict(pool.map(fetch, wanted))
+        return dict(pool.map(fetch, paths))
 
 
 def required_checks(org: str, repo: str, branch: str) -> list[str]:
@@ -778,10 +799,28 @@ class Plan:
     notes: list[str] = dataclasses.field(default_factory=list)
     fresh: set[str] = dataclasses.field(default_factory=set)
     pr: str = ""
+    base_sha: str = ""
 
     @property
     def changed(self) -> bool:
         return bool(self.edits or self.lock)
+
+
+def materialize(root: Path, files: dict[str, str]) -> None:
+    """A scratch git repository holding ``files``, committed, so the guard and the age checks
+    can compare against HEAD exactly as they would in a checkout."""
+    for path, text in files.items():
+        (root / path).parent.mkdir(parents=True, exist_ok=True)
+        (root / path).write_text(text)
+    for cmd in (["git", "init", "-q"], ["git", "add", "-A"],
+                ["git", "-c", "user.name=fanout", "-c", "user.email=fanout@invalid",
+                 "commit", "-qm", "base", "--allow-empty"]):
+        subprocess.run(cmd, cwd=root, check=True, capture_output=True)
+
+
+def changed_files(root: Path) -> list[str]:
+    _run(["git", "add", "-A"], root)
+    return _run(["git", "diff", "--cached", "--name-only"], root).stdout.split()
 
 
 def relock(root: Path, std: Standards, plan: Plan, pyproject_changed: set[str]) -> set[str]:
@@ -844,22 +883,21 @@ def fanout_target(org: str, t: Target, std: Standards, fresh: set[str], expired:
                   workdir: Path, dry_run: bool, std_rev: str) -> Plan:
     plan = Plan(t)
     root = workdir / f"{t.repo}@{t.branch.replace('/', '_')}"
-    lfs = {**os.environ, "GIT_LFS_SKIP_SMUDGE": "1"}
-    r = subprocess.run(["gh", "repo", "clone", f"{org}/{t.repo}", str(root), "--", "--depth", "1",
-                        "--single-branch", "--branch", t.branch, "--filter=blob:none",
-                        "--sparse", "-q"], capture_output=True, text=True, env=lfs)
-    if r.returncode == 0:
-        r = subprocess.run(["git", "sparse-checkout", "set", "--no-cone", *SPARSE], cwd=root,
-                           capture_output=True, text=True, env=lfs)
-    if r.returncode != 0:
-        plan.refusals.append(f"clone failed: {r.stderr.strip()}")
+    try:
+        sha = head_sha(org, t.repo, t.branch)
+        snapshot = remote_files(org, t.repo, sha, for_fanout=True)
+    except RuntimeError as e:
+        plan.refusals.append(f"could not read the branch: {e}")
         return plan
+    plan.base_sha = sha
+    materialize(root, snapshot)
     files = local_files(root)
     edits = apply(files, std, t.repo, fresh, expired)
     for path, text in edits.items():
         (root / path).parent.mkdir(parents=True, exist_ok=True)
         (root / path).write_text(text)
         plan.edits.append(path)
+    _run(["git", "add", "-A"], root)  # so files fan-out created count as tracked
     pyprojects = {p for p in edits if PurePosixPath(p).name == "pyproject.toml"}
     plan.fresh = relock(root, std, plan, pyprojects) & fresh
     remaining = drift(local_files(root), std, t.repo)
@@ -892,6 +930,32 @@ def fanout_target(org: str, t: Target, std: Standards, fresh: set[str], expired:
     return plan
 
 
+def commit_through_api(org: str, repo: str, root: Path, base: str, branch: str,
+                       message: str) -> str:
+    """Commit the scratch repository's changes on top of ``base`` as a new ``branch``."""
+    modes = tree_modes(org, repo, base)
+    entries = []
+    for path in changed_files(root):
+        f = root / path
+        if not f.exists():
+            entries.append({"path": path, "mode": modes.get(path, "100644"), "type": "blob",
+                            "sha": None})
+            continue
+        blob = json.loads(gh("api", "-X", "POST", f"repos/{org}/{repo}/git/blobs", "--input", "-",
+                             stdin=json.dumps({"content": f.read_text(), "encoding": "utf-8"})))
+        entries.append({"path": path, "mode": modes.get(path, "100644"), "type": "blob",
+                        "sha": blob["sha"]})
+    base_tree = gh("api", f"repos/{org}/{repo}/git/commits/{base}", "--jq", ".tree.sha").strip()
+    tree = json.loads(gh("api", "-X", "POST", f"repos/{org}/{repo}/git/trees", "--input", "-",
+                         stdin=json.dumps({"base_tree": base_tree, "tree": entries})))
+    commit = json.loads(gh("api", "-X", "POST", f"repos/{org}/{repo}/git/commits", "--input", "-",
+                           stdin=json.dumps({"message": message, "tree": tree["sha"],
+                                             "parents": [base]})))
+    gh("api", "-X", "POST", f"repos/{org}/{repo}/git/refs", "--input", "-",
+       stdin=json.dumps({"ref": f"refs/heads/{branch}", "sha": commit["sha"]}))
+    return commit["sha"]
+
+
 def summary_line(plan: Plan, std: Standards) -> str:
     bits = []
     if any(PurePosixPath(e).name in {".python-version", "pyproject.toml"} or "workflows" in e
@@ -921,12 +985,11 @@ def open_pr(org: str, root: Path, plan: Plan, std: Standards, std_rev: str) -> N
         *[f"- {c}" for c in plan.checks], "",
         *[f"allow-fresh: {p}" for p in sorted(plan.fresh)],
     ])
-    for cmd in (["git", "checkout", "-q", "-b", head], ["git", "add", "-A"],
-                ["git", "commit", "-q", "-m", title], ["git", "push", "-q", "-u", "origin", head]):
-        r = _run(cmd, root)
-        if r.returncode != 0:
-            plan.refusals.append(f"`{' '.join(cmd)}` failed: {r.stderr.strip()}")
-            return
+    try:
+        commit_through_api(org, t.repo, root, plan.base_sha, head, title)
+    except RuntimeError as e:
+        plan.refusals.append(f"could not push {head}: {e}")
+        return
     plan.pr = gh("pr", "create", "-R", f"{org}/{t.repo}", "--base", t.branch, "--head", head,
                  "--title", title, "--body", body).strip()
 
