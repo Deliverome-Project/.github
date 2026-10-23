@@ -105,6 +105,7 @@ def test_main_end_to_end(tmp_path, monkeypatch):
     git("commit", "-qm", "head")
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("BASE_SHA", "HEAD~1")
+    monkeypatch.setenv("CHECK_STANDARDS", "false")  # drift has its own tests
     monkeypatch.setattr(dg, "release_time", lambda *a: datetime.now(tz=UTC) - timedelta(days=400))
     assert dg.main() == 1  # silent downgrade fails
     monkeypatch.setenv("PR_BODY", "allow-downgrade: pandas")
@@ -124,9 +125,20 @@ source = {{ registry = "https://pypi.org/simple" }}
 """
 
 
-def test_below_floor_flags_vulnerable_pins_only():
+# fixed floors, so raising one in standards.toml does not break these tests
+FLOORS = {("pypi", "certifi"): ("2026.10.19", "eMudhra"),
+          ("crates", "webpki-roots"): ("1.0.10", "eMudhra")}
+
+
+def test_floors_load_from_standards_file():
+    assert dg.SECURITY_FLOORS == dg.load_floors(dg.STANDARDS_FILE)
+    assert all(eco in {"pypi", "crates", "npm"} for eco, _ in dg.SECURITY_FLOORS)
+
+
+def test_below_floor_flags_vulnerable_pins_only(monkeypatch):
+    monkeypatch.setattr(dg, "SECURITY_FLOORS", FLOORS)
     assert dg.below_floor(dg.parse_uv(CERTIFI.format(certifi="2026.5.20")), "pypi") == [
-        ("certifi", "2026.5.20", "2026.10.19", dg._EMUDHRA)
+        ("certifi", "2026.5.20", "2026.10.19", "eMudhra")
     ]
     for ok in ("2026.10.19", "2026.11.1"):
         assert dg.below_floor(dg.parse_uv(CERTIFI.format(certifi=ok)), "pypi") == []
@@ -154,6 +166,8 @@ def test_floor_fails_an_unrelated_pr_until_fixed(tmp_path, monkeypatch):
     monkeypatch.setenv("BASE_SHA", "HEAD~1")
     monkeypatch.delenv("PR_BODY", raising=False)
     monkeypatch.setattr(dg, "release_time", lambda *a: datetime.now(tz=UTC) - timedelta(days=2))
+    monkeypatch.setattr(dg, "SECURITY_FLOORS", FLOORS)
+    monkeypatch.setenv("CHECK_STANDARDS", "false")  # drift has its own tests
     assert dg.main() == 1  # a vulnerable pin fails every PR, changed or not
     # the fix: bump to the floor, which is days old but exempt from the age rule
     (tmp_path / "uv.lock").write_text(CERTIFI.format(certifi="2026.10.19"))
