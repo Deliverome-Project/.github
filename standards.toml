@@ -58,6 +58,12 @@ package = "rustls-webpki"
 version = "0.103.16"
 reason = "eMudhra CA compromise (2026-10-19)"
 
+[[floors]]
+ecosystem = "pypi"
+package = "pillow"
+version = "13.0.0"
+reason = "Pillow 12.x advisories, fixed in 13.0.0 (2026-10-16)"
+
 # Projects that deliberately stay on another Python. `path` is a directory (or file) inside
 # the repository; it and everything under it use `python` instead of the standard.
 [[exceptions]]
