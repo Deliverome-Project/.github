@@ -16,9 +16,14 @@ and fails when a PR
    Dependabot *security* updates skip the cooldown entirely.
 
 It also fails while any lockfile at HEAD, changed or not, still pins a package below a
-**security floor** (``SECURITY_FLOORS``): a known-vulnerable version that no repo may keep.
-Raising the floors here reaches every calling repo on its next pull request. A version
-that sits exactly on a floor is exempt from the age rule, since the fix may be days old.
+**security floor**: a known-vulnerable version that no repo may keep. Floors live in
+``standards.toml`` (``STANDARDS_FILE``; the workflow reads it from ``main``), so raising one
+reaches every calling repo on its next pull request. A version that sits exactly on a floor
+is exempt from the age rule, since the fix may be days old.
+
+And it fails when the repository's Python or uv pins drift from that standard
+(``standards.py drift``: requires-python, .python-version, ruff/mypy targets, CI Python
+versions, uv required-version, setup-uv pins). Set CHECK_STANDARDS=false to skip.
 
 Deliberate exceptions are written in the PR description, one per line, so they are reviewed
 and recorded:
@@ -97,18 +102,18 @@ PARSERS = {"pypi": parse_uv, "crates": parse_cargo, "npm": parse_npm}
 # security floors: the lowest version any Deliverome lockfile may pin, with the reason
 # ------------------------------------------------------------------------------------------
 
-# eMudhra intermediate-CA key compromise, 2026-10-19: eight intermediates whose private keys
-# are recoverable. These packages ship their own root store; versions below these trust them.
-# https://blog.cloudflare.com/emudhra-certificate-compromise/
-_EMUDHRA = "eMudhra CA compromise (2026-10-19)"
-SECURITY_FLOORS: dict[tuple[str, str], tuple[str, str]] = {
-    ("pypi", "certifi"): ("2026.10.19", _EMUDHRA),
-    ("pypi", "pip"): ("26.2.2", _EMUDHRA),
-    ("pypi", "uv"): ("0.13.4", _EMUDHRA),
-    ("crates", "webpki-roots"): ("1.0.10", _EMUDHRA),
-    ("crates", "webpki-root-certs"): ("1.0.10", _EMUDHRA),
-    ("crates", "rustls-webpki"): ("0.103.16", _EMUDHRA),
-}
+# The floors and their reasons are [[floors]] in standards.toml.
+STANDARDS_FILE = Path(os.environ.get("STANDARDS_FILE")
+                      or Path(__file__).resolve().parents[1] / "standards.toml")
+
+
+def load_floors(path: Path = STANDARDS_FILE) -> dict[tuple[str, str], tuple[str, str]]:
+    data = tomllib.loads(path.read_text())
+    return {(f["ecosystem"], f["package"].lower()): (f["version"], f["reason"])
+            for f in data.get("floors", [])}
+
+
+SECURITY_FLOORS: dict[tuple[str, str], tuple[str, str]] = load_floors()
 
 
 def below_floor(head: dict, ecosystem: str) -> list[tuple[str, str, str, str]]:
@@ -243,6 +248,17 @@ def compare(base: dict, head: dict, ecosystem: str):
     return down, changed
 
 
+def standards_drift() -> list[str]:
+    """Python/uv pins that disagree with standards.toml, as error lines."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import standards
+
+    std = standards.load(STANDARDS_FILE)
+    repo = os.environ.get("GITHUB_REPOSITORY", "").rsplit("/", 1)[-1] or Path.cwd().name
+    return [f"standards drift: {f}" for f in standards.drift(standards.local_files(Path(".")),
+                                                             std, repo)]
+
+
 def main() -> int:
     base_ref = os.environ.get("BASE_SHA") or "origin/main"
     min_age = timedelta(days=float(os.environ.get("MIN_AGE_DAYS") or 7))
@@ -280,6 +296,9 @@ def main() -> int:
         notes.append(f"{path}: {len(uniq)} new/changed versions checked, {len(down)} downgraded"
                      + (f", {unknown} without a registry date" if unknown else ""))
 
+    if os.environ.get("CHECK_STANDARDS", "true").lower() != "false":
+        errors += standards_drift()
+
     for n in notes:
         print(n)
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
@@ -294,8 +313,9 @@ def main() -> int:
         print(f"::error::{e}")
     print()
     print("A security floor means a known-vulnerable version: upgrade it, e.g.")
-    print("`uv lock --upgrade-package certifi`. Floors and their reasons are SECURITY_FLOORS in")
-    print("Deliverome-Project/.github scripts/dependency_guard.py.")
+    print("`uv lock --upgrade-package certifi`. Floors and their reasons are in")
+    print("Deliverome-Project/.github standards.toml. Drift from its Python or uv versions is")
+    print("fixed by `python scripts/standards.py fanout --repo <this repo>` there, or by hand.")
     print("Downgrades usually mean a new or re-pinned dependency caps a version and the resolver")
     print("went backwards. Fresh versions are held for a week as supply-chain protection. If the")
     print("change is intended, add `allow-downgrade: <name>` or `allow-fresh: <name>` to the PR")
