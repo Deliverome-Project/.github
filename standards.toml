@@ -76,6 +76,4 @@ org = "Deliverome-Project"
 window_days = 90
 min_merged_prs = 2
 include = []
-# agentflow dev is being retired (2026-10-22): main is the only long-lived branch; drop this
-# entry once dev is deleted.
-exclude = ["agentflow:dev"]
+exclude = []
