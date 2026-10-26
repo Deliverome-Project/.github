@@ -57,6 +57,7 @@ def npm(lodash, nested="4.0.0"):
     ("pypi", "2.3.3", "3.0.3"), ("pypi", "3.0.0rc1", "3.0.0"), ("pypi", "1.0", "1.0.post1"),
     ("npm", "4.17.9", "4.17.21"), ("npm", "1.0.0-beta.2", "1.0.0-beta.11"),
     ("npm", "1.0.0-rc.1", "1.0.0"), ("crates", "0.8.5", "0.9.0"),
+    ("cran", "1.4-1", "1.4-2"), ("cran", "2.23-26", "2.23.27"), ("cran", "0.9.1", "1.0.0"),
 ])
 def test_version_order(eco, older, newer):
     assert dg.version_key(eco, older) < dg.version_key(eco, newer)
@@ -132,7 +133,7 @@ FLOORS = {("pypi", "certifi"): ("2026.10.19", "eMudhra"),
 
 def test_floors_load_from_standards_file():
     assert dg.SECURITY_FLOORS == dg.load_floors(dg.STANDARDS_FILE)
-    assert all(eco in {"pypi", "crates", "npm"} for eco, _ in dg.SECURITY_FLOORS)
+    assert all(eco in dg.PARSERS for eco, _ in dg.SECURITY_FLOORS)
 
 
 def test_below_floor_flags_vulnerable_pins_only(monkeypatch):
@@ -177,3 +178,45 @@ def test_floor_fails_an_unrelated_pr_until_fixed(tmp_path, monkeypatch):
     (tmp_path / "uv.lock").write_text(CERTIFI.format(certifi="2026.10.21"))
     git("commit", "-qam", "newer")
     assert dg.main() == 1
+
+
+def renv(limpa, bioc="3.23.1"):
+    return json.dumps({"R": {"Version": "4.6.0"}, "Packages": {
+        "limpa": {"Package": "limpa", "Version": limpa, "Source": "Bioconductor"},
+        "BiocVersion": {"Package": "BiocVersion", "Version": bioc, "Source": "Bioconductor"},
+        "KernSmooth": {"Package": "KernSmooth", "Version": "2.23-26", "Source": "Repository"},
+    }})
+
+
+def test_renv_dash_is_not_a_prerelease():
+    # semver would read 1.4-2 as a pre-release of 1.4.0; R means patch level 2 of 1.4
+    assert dg.version_key("cran", "1.4-2") > dg.version_key("cran", "1.4.0")
+    assert dg.parse_renv(renv("1.4.2"))["KernSmooth"] == ("KernSmooth", "2.23-26")
+
+
+def test_renv_downgrade_fails_without_an_age_lookup(tmp_path, monkeypatch):
+    import subprocess
+
+    def git(*a):
+        subprocess.run(["git", *a], cwd=tmp_path, check=True, capture_output=True)
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    (tmp_path / "renv.lock").write_text(renv("1.4.2"))
+    git("add", ".")
+    git("commit", "-qm", "base")
+    (tmp_path / "renv.lock").write_text(renv("1.4.1", bioc="3.23.2"))
+    git("add", ".")
+    git("commit", "-qm", "head")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("BASE_SHA", "HEAD~1")
+    monkeypatch.setenv("CHECK_STANDARDS", "false")
+
+    def no_lookup(*a):
+        raise AssertionError("renv versions must not be looked up for age")
+
+    monkeypatch.setattr(dg, "release_time", no_lookup)
+    assert dg.main() == 1  # limpa 1.4.2 -> 1.4.1 is a silent downgrade
+    monkeypatch.setenv("PR_BODY", "allow-downgrade: limpa")
+    assert dg.main() == 0  # the BiocVersion upgrade alone passes

@@ -5,6 +5,7 @@ Compares every lockfile in the repository at HEAD with the pull request's base:
 * ``uv.lock``            (Python, PyPI)
 * ``Cargo.lock``         (Rust, crates.io)
 * ``package-lock.json``  (JavaScript, npm; lockfile v2/v3)
+* ``renv.lock``          (R, CRAN and Bioconductor; downgrades and floors only)
 
 and fails when a PR
 
@@ -13,7 +14,9 @@ and fails when a PR
 2. newly locks a version released **less than MIN_AGE_DAYS** (default 7) ago, transitive
    dependencies included. Supply-chain attacks are most dangerous in their first week, and
    Dependabot's cooldown only covers the package it bumps, not what the lockfile re-resolves;
-   Dependabot *security* updates skip the cooldown entirely.
+   Dependabot *security* updates skip the cooldown entirely. R has no age check here: the
+   monthly renv update takes CRAN from a Posit Package Manager snapshot dated 7 days back,
+   which is the R side of the quarantine.
 
 It also fails while any lockfile at HEAD, changed or not, still pins a package below a
 **security floor**: a known-vulnerable version that no repo may keep. Floors live in
@@ -51,7 +54,11 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-LOCKFILES = {"uv.lock": "pypi", "Cargo.lock": "crates", "package-lock.json": "npm"}
+LOCKFILES = {"uv.lock": "pypi", "Cargo.lock": "crates", "package-lock.json": "npm",
+             "renv.lock": "cran"}
+# Ecosystems whose new versions are held for MIN_AGE_DAYS; renv gets its week from the
+# dated package-manager snapshot it resolves against instead.
+AGE_CHECKED = {"pypi", "crates", "npm"}
 CRATES_IO = "registry+https://github.com/rust-lang/crates.io-index"
 USER_AGENT = "deliverome-dependency-guard/1.0 (+https://github.com/Deliverome-Project/.github)"
 TIMEOUT = 20
@@ -96,7 +103,13 @@ def parse_npm(text: str) -> dict[str, tuple[str, str]]:
     return out
 
 
-PARSERS = {"pypi": parse_uv, "crates": parse_cargo, "npm": parse_npm}
+def parse_renv(text: str) -> dict[str, tuple[str, str]]:
+    # every package renv pins (CRAN, Bioconductor, GitHub): the Version field is what installs
+    return {name: (name, p["Version"])
+            for name, p in json.loads(text).get("Packages", {}).items() if p.get("Version")}
+
+
+PARSERS = {"pypi": parse_uv, "crates": parse_cargo, "npm": parse_npm, "cran": parse_renv}
 
 # ------------------------------------------------------------------------------------------
 # security floors: the lowest version any Deliverome lockfile may pin, with the reason
@@ -168,8 +181,17 @@ def _semver(version: str) -> tuple:
     return (*nums, 0, ids)
 
 
+def _r_version(version: str) -> tuple:
+    # R versions are integers separated by '.' or '-' (1.4-2); the '-' is not a pre-release
+    return tuple(int(x) for x in re.split(r"[.-]", version) if x.isdigit())
+
+
 def version_key(ecosystem: str, version: str) -> tuple:
-    return _pep440(version) if ecosystem == "pypi" else _semver(version)
+    if ecosystem == "pypi":
+        return _pep440(version)
+    if ecosystem == "cran":
+        return _r_version(version)
+    return _semver(version)
 
 
 # ------------------------------------------------------------------------------------------
@@ -281,6 +303,10 @@ def main() -> int:
             line = f"{path}: {name} downgraded {old} -> {new}"
             (notes if ok else errors).append(line + (" (allowed)" if ok else ""))
         uniq = sorted(set(changed))
+        if eco not in AGE_CHECKED:
+            notes.append(f"{path}: {len(uniq)} new/changed versions, {len(down)} downgraded"
+                         " (no age check for this ecosystem)")
+            continue
         with ThreadPoolExecutor(max_workers=10) as pool:
             times = list(pool.map(lambda nv: release_time(eco, *nv), uniq))
         unknown = 0

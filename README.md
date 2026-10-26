@@ -82,9 +82,12 @@ A reusable workflow that fails a pull request when it
 4. **drifts from the standard Python or uv** (see above). `with: check-standards: false`
    turns this off for a repository that cannot follow it yet.
 
-It reads every `uv.lock` (PyPI), `Cargo.lock` (crates.io) and `package-lock.json` (npm) in
-the repository, compares each with the pull request's base, and looks up release dates from
-the registries. Standard-library Python; no dependencies.
+It reads every `uv.lock` (PyPI), `Cargo.lock` (crates.io), `package-lock.json` (npm) and
+`renv.lock` (R: CRAN and Bioconductor) in the repository, compares each with the pull
+request's base, and looks up release dates from the registries. `renv.lock` gets the
+downgrade and floor checks but no age check: renv resolves CRAN against a Posit Package
+Manager snapshot dated 7 days back, which is its week of quarantine. Standard-library
+Python; no dependencies.
 
 ### Use
 
