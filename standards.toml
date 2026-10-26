@@ -21,7 +21,7 @@ cloud = "0.13.4"
 
 # Security floors: the lowest version any lockfile may pin. A version exactly on its floor
 # is exempt from the 7-day age rule, since the fix may be days old. `ecosystem` is pypi,
-# crates or npm.
+# crates, npm or cran (R, renv.lock).
 [[floors]]
 ecosystem = "pypi"
 package = "certifi"
