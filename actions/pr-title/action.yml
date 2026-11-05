@@ -1,0 +1,60 @@
+# Shared PR title check for Deliverome repos. Use it as a step inside the calling repo's own
+# job, so the required check keeps its job name (e.g. `lint`):
+#
+#   - uses: Deliverome-Project/.github/actions/pr-title@main
+#     with:
+#       extra-scopes: |
+#         site
+#         hooks
+#
+# Titles must read `<type>(<optional-scope>): <subject>`. The types and the core scopes below
+# apply in every repo; `extra-scopes` adds the ones that only mean something in the caller.
+# Callers pin `@main`, so a scope added here is accepted everywhere at once. See README.md.
+name: pr-title
+description: Validate a pull request title against the shared Deliverome types and scopes
+
+inputs:
+  extra-scopes:
+    description: Newline-separated scopes allowed in this repo on top of the shared core
+    required: false
+    default: ""
+  github-token:
+    description: Token used to read the pull request
+    required: false
+    default: ${{ github.token }}
+
+runs:
+  using: composite
+  steps:
+    - name: Combine shared and repo scopes
+      id: scopes
+      shell: bash
+      env:
+        EXTRA: ${{ inputs.extra-scopes }}
+      run: |
+        {
+          echo "list<<__SCOPES__"
+          printf '%s\n' data docs ci deps deps-dev infra
+          printf '%s\n' "$EXTRA" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -v '^$' || true
+          echo "__SCOPES__"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Validate PR title shape
+      uses: amannn/action-semantic-pull-request@v6
+      with:
+        types: |
+          feat
+          fix
+          refactor
+          perf
+          docs
+          test
+          build
+          ci
+          chore
+        scopes: ${{ steps.scopes.outputs.list }}
+        requireScope: false
+        subjectPattern: ^.+$
+        subjectPatternError: subject must not be empty
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}

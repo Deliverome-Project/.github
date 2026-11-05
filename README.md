@@ -150,6 +150,38 @@ repo's `.pre-commit-config.yaml`:
 
 and make sure contributors run `pre-commit install --hook-type pre-push`.
 
+## PR title check
+
+A composite action that fails a pull request whose title is not
+`<type>(<optional-scope>): <subject>`. Types are `feat`, `fix`, `refactor`, `perf`, `docs`,
+`test`, `build`, `ci` and `chore`. The scopes `data`, `docs`, `ci`, `deps`, `deps-dev` and
+`infra` are allowed in every repo, and each repo adds its own through `extra-scopes`. A scope
+is optional.
+
+It is a step, not a reusable workflow, so the calling job keeps its name and the required
+`lint` check is unchanged. Callers pin `@main`: adding a shared scope here applies to every
+repo as soon as it merges.
+
+```yaml
+# .github/workflows/lint-pr-title.yml in the calling repo
+name: Validate PR Title
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+permissions:
+  contents: read
+  pull-requests: read
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: Deliverome-Project/.github/actions/pr-title@main
+        with:
+          extra-scopes: |
+            site
+            hooks
+```
+
 ## Python release reminder
 
 A reusable workflow that keeps one open issue, titled `Python upgrade: ...`, in the calling
