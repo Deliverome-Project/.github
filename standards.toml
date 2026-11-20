@@ -19,6 +19,12 @@ minimum = "0.13.4"
 # managed/claude/ensure-uv.sh. At least `minimum`, and at least 7 days old.
 cloud = "0.13.4"
 
+[ty]
+# The exact ty (Astral's type checker) a project pins when it type-checks with ty: every
+# pyproject.toml that lists ty as a dependency must say "ty==<version>", so all repositories
+# check against the same rules. At least 7 days old, like any locked release.
+version = "0.0.102"
+
 # Security floors: the lowest version any lockfile may pin. A version exactly on its floor
 # is exempt from the 7-day age rule, since the fix may be days old. `ecosystem` is pypi,
 # crates, npm or cran (R, renv.lock).

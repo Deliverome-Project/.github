@@ -98,6 +98,7 @@ class Standards:
     discovery: dict
     uv_cloud: str = ""
     hook_template: str = ""
+    ty: str = ""  # exact ty version projects pin; "" when the standard sets none
 
     def ensure_uv(self) -> str:
         """The managed ensure-uv.sh, with this standard's uv versions filled in."""
@@ -136,6 +137,7 @@ def load(path: Path | str | None = None) -> Standards:
         discovery=data.get("discovery", {}),
         uv_cloud=data["uv"].get("cloud", data["uv"]["minimum"]),
         hook_template=template.read_text() if template.exists() else "",
+        ty=data.get("ty", {}).get("version", ""),
     )
 
 
@@ -181,6 +183,9 @@ REQUIRES_PYTHON = re.compile(r'(?m)^(requires-python\s*=\s*["\'][^"\']*?>=\s*)(3
 TARGET_VERSION = re.compile(r'(?m)^(target-version\s*=\s*["\']py)(3)(\d+)(["\'])')
 MYPY_VERSION = re.compile(r'(?m)^(python_version\s*=\s*["\'])(3\.\d+)(["\'])')
 REQUIRED_VERSION = re.compile(r'(?m)^(required-version\s*=\s*["\'][^"\']*?>=\s*)([\d.]+)')
+# ty listed as a dependency anywhere in a pyproject (project, optional or dependency groups):
+# "ty", "ty==0.0.102", "ty>=0.0.1", "ty[extra]==..."; not "typer", "types-requests"
+TY_DEPENDENCY = re.compile(r'(["\'])ty(?:\[[^\]]*\])?\s*([<>=!~][^"\';]*)?(?:;[^"\']*)?\1')
 # setup-python scalar: `python-version: "3.12"` (expressions such as ${{ matrix.python }} skip)
 PY_SCALAR = re.compile(r'(?m)^(\s*-?\s*python(?:-version)?:\s*)(["\']?)(3\.\d+)(\2)(\s*(?:#.*)?)$')
 # matrix flow list: `python: ['3.11', '3.12']`
@@ -224,6 +229,12 @@ def drift_pyproject(path: str, text: str, std: Standards, repo: str, has_lock: b
                                f">={m.group(2)}", f">={std.uv_minimum}"))
     elif has_lock:
         out.append(Finding(path, 1, "uv required-version", "missing", f">={std.uv_minimum}"))
+    if std.ty:
+        for m in TY_DEPENDENCY.finditer(text):
+            spec = (m.group(2) or "").replace(" ", "")
+            if spec != f"=={std.ty}":
+                out.append(Finding(path, _line_of(text, m.start()), "ty pin",
+                                   f"ty{spec}" if spec else "ty (unpinned)", f"ty=={std.ty}"))
     return out
 
 
