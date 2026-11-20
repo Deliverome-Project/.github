@@ -72,6 +72,18 @@ path = "envs/census"
 python = "3.13"
 reason = "tiledbsoma publishes no Python 3.14 wheels yet"
 
+[[exceptions]]
+repo = "deliverome-internal"
+path = "envs/alphadia"
+python = "3.12"
+reason = "alphaDIA (2.4.0, and 2.5.0 the latest) pins numpy<2 and scipy==1.12.0, which ship wheels only up to Python 3.12"
+
+[[exceptions]]
+repo = "deliverome-internal"
+path = "workflows/alphadia_qc"
+python = "3.12"
+reason = "runs in the envs/alphadia environment (alphaDIA: Python 3.11/3.12 only)"
+
 # Which branches count as long-lived is discovered, not listed: the default branch, every
 # protected branch, every branch a ruleset covers, and every branch that was the base of at
 # least `min_merged_prs` merged pull requests in the last `window_days` (this is what finds
