@@ -348,3 +348,29 @@ def test_fanout_target_end_to_end_dry_run(tmp_path, monkeypatch):
     # the same run without --dry-run reaches open_pr
     plan = st.fanout_target("org", t, STD, set(), set(), tmp_path / "2", False, "deadbeef")
     assert len(pushed) == 1
+
+
+def test_ty_pin_must_match_the_standard():
+    import dataclasses
+
+    std = dataclasses.replace(STD, ty="0.0.102")
+    base = PYPROJECT.replace('requires-python = ">=3.12"', 'requires-python = ">=3.14"')
+    ok = base + '\n[dependency-groups]\ndev = ["pytest>=8", "ty==0.0.102", "typer>=0.12"]\n'
+    assert [f for f in st.drift_pyproject("pyproject.toml", ok, std, "x", False)
+            if f.what == "ty pin"] == []
+    for dep, found in (('"ty>=0.0.90"', "ty>=0.0.90"), ('"ty"', "ty (unpinned)"),
+                       ('"ty==0.0.99"', "ty==0.0.99")):
+        text = base + f"\n[dependency-groups]\ndev = [{dep}]\n"
+        pins = [f for f in st.drift_pyproject("pyproject.toml", text, std, "x", False)
+                if f.what == "ty pin"]
+        assert [(p.found, p.expected) for p in pins] == [(found, "ty==0.0.102")]
+
+
+def test_no_ty_standard_means_no_ty_findings():
+    text = PYPROJECT + '\n[dependency-groups]\ndev = ["ty>=0.0.1"]\n'
+    assert not [f for f in st.drift_pyproject("pyproject.toml", text, STD, "x", False)
+                if f.what == "ty pin"]
+
+
+def test_shipped_standard_pins_ty():
+    assert st.load(ROOT / "standards.toml").ty

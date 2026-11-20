@@ -64,6 +64,14 @@ comes from the `v1` tag. After this lands: run fan-out, merge its pull requests,
 so the drift check starts failing pull requests. Later edits to `standards.toml` need no tag
 move.
 
+## Type checker: ty
+
+`[ty] version` pins the exact [ty](https://github.com/astral-sh/ty) release a project uses when
+it type-checks with ty. Any `pyproject.toml` that lists `ty` as a dependency (project, optional or
+dependency group) must pin `ty==<version>`; anything else is drift (`ty pin`), reported by the
+dependency guard on pull requests and by the weekly drift job. Bump it here, at least 7 days after
+the release, and update each project's pin and lock (`uv add --dev ty==<version>`).
+
 ## Dependency guard
 
 A reusable workflow that fails a pull request when it
