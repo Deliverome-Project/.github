@@ -28,7 +28,7 @@
 
 We publish our data and code openly. Each repository's `LICENSE` and `CITATION.cff` give the exact terms and how to cite it:
 
-| Repository | Licence | Cite |
+| Repository | License | Cite |
 |---|---|---|
 | `accessible-surfaceome` | Code MIT; derived data CC0 1.0 | Software [10.5281/zenodo.22116981](https://doi.org/10.5281/zenodo.22116981); data [10.5281/zenodo.20805383](https://doi.org/10.5281/zenodo.20805383) |
 | `deliverome-surfaceome-library-v1` | Code MIT; library designs CC0 1.0 | `CITATION.cff` |
@@ -36,6 +36,6 @@ We publish our data and code openly. Each repository's `LICENSE` and `CITATION.c
 | `limpa-rs` | GPL-3.0-or-later | The original LIMPA papers, listed in `CITATION.cff` |
 | `deliverome-blog` | Code MIT; data CC0 1.0; text and figures CC BY 4.0 | Each post's own Zenodo DOI, in the repo README |
 
-Third-party data keeps its original licence, recorded in each repository's licensing notes.
+Third-party data keeps its original license, recorded in each repository's licensing notes.
 
 📬 Questions, collaborations, or data requests: [contact@deliverome.org](mailto:contact@deliverome.org)
