@@ -20,7 +20,6 @@
 **Analysis tools**
 - [`agentflow`](https://github.com/Deliverome-Project/agentflow): reproducible flow cytometry analysis with FlowKit, a CLI, and optional Matplotlib gate editing
 - [`limpa-rs`](https://github.com/Deliverome-Project/limpa-rs): Rust-accelerated LIMPA protein quantification with a pinned R reference and Python interface (release candidate)
-- [`Spectronaut-nf`](https://github.com/Deliverome-Project/Spectronaut-nf): deploys multiple Spectronaut searches to HPC nodes using batch schedulers (needs your own Spectronaut licence)
 
 **Writing**
 - [`deliverome-blog`](https://github.com/Deliverome-Project/deliverome-blog): code and data behind our Substack posts
@@ -35,7 +34,6 @@ We publish our data and code openly. Each repository's `LICENSE` and `CITATION.c
 | `deliverome-surfaceome-library-v1` | Code MIT; library designs CC0 1.0 | `CITATION.cff` |
 | `agentflow` | MIT | [10.5281/zenodo.23718421](https://doi.org/10.5281/zenodo.23718421), plus the FlowKit paper |
 | `limpa-rs` | GPL-3.0-or-later | The original LIMPA papers, listed in `CITATION.cff` |
-| `Spectronaut-nf` | GPL-3.0 | — |
 | `deliverome-blog` | Code MIT; data CC0 1.0; text and figures CC BY 4.0 | Each post's own Zenodo DOI, in the repo README |
 
 Third-party data keeps its original licence, recorded in each repository's licensing notes.
