@@ -100,4 +100,7 @@ org = "Deliverome-Project"
 window_days = 90
 min_merged_prs = 2
 include = []
-exclude = []
+# Frozen read-only archive branches are ruleset-covered (so discovery finds them) but never updated.
+exclude = [
+  "deliverome-internal:archive/exploratory-2026-11",
+]
