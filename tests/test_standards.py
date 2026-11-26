@@ -77,7 +77,7 @@ def lock(**pins):
 def test_shipped_standards_file_loads():
     std = st.load(ROOT / "standards.toml")
     assert std.python and std.uv_minimum and std.floors
-    assert std.python_for("deliverome-internal", "envs/census/pyproject.toml") == "3.13"
+    assert std.python_for("deliverome-internal", "envs/alphadia/pyproject.toml") == "3.12"
 
 
 def test_exception_covers_path_and_below_only():
