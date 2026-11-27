@@ -1,19 +1,44 @@
-name: Security
+# Reusable workflow-hardening and secret-scanning check. Call it from any Deliverome repo:
+#
+#   jobs:
+#     security:
+#       uses: Deliverome-Project/.github/.github/workflows/security.yml@v1
+#
+# Audits GitHub Actions workflows with zizmor (enforcing 40-char SHA pins on third-party
+# actions, minimal permissions, and no template injection) and scans PR commits + HEAD
+# working tree with checksum-verified gitleaks.
+name: security
 
 on:
-  pull_request:
-  push:
-    branches: [main]
-  schedule:
-    - cron: "17 8 * * 1"
-  workflow_dispatch:
+  workflow_call:
+    inputs:
+      zizmor-paths:
+        description: Space-separated workflow/action paths to audit with zizmor
+        type: string
+        default: ".github/workflows"
+      zizmor-config:
+        description: Path to zizmor config in the caller repo (falls back to org managed/zizmor.yml if absent)
+        type: string
+        default: ".github/zizmor.yml"
+      zizmor-min-severity:
+        description: Minimum zizmor severity to fail on (low, medium, high)
+        type: string
+        default: "medium"
+      run-gitleaks:
+        description: Run checksum-verified gitleaks secret scan
+        type: boolean
+        default: true
+      gitleaks-mode:
+        description: "diff-and-dir (PR commits + HEAD tree) or all (full git history)"
+        type: string
+        default: "diff-and-dir"
+      gitleaks-config:
+        description: Optional path to a .gitleaks.toml in the caller repo (auto-used if present)
+        type: string
+        default: ".gitleaks.toml"
 
 permissions:
   contents: read
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
 
 jobs:
   security:
@@ -22,18 +47,44 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          fetch-depth: 0
+          fetch-depth: ${{ inputs.run-gitleaks && 0 || 1 }}
           persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: Deliverome-Project/.github
+          ref: main
+          path: .org-security
+          persist-credentials: false
+          sparse-checkout: |
+            managed/
+          sparse-checkout-cone-mode: false
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.14"
-      - name: Audit workflows and actions with zizmor
+      - name: Audit workflows with zizmor
+        env:
+          ZIZMOR_PATHS: ${{ inputs.zizmor-paths }}
+          ZIZMOR_CONFIG: ${{ inputs.zizmor-config }}
+          ZIZMOR_MIN_SEVERITY: ${{ inputs.zizmor-min-severity }}
         run: |
-          pip install zizmor==1.31.1
-          zizmor --offline --min-severity medium .github/workflows actions
-      - name: Scan full Git history for secrets (gitleaks)
+          set -euo pipefail
+          pip install --quiet zizmor==1.31.1
+          cfg_args=()
+          if [ -n "$ZIZMOR_CONFIG" ] && [ -f "$ZIZMOR_CONFIG" ]; then
+            cfg_args=(--config "$ZIZMOR_CONFIG")
+          elif [ -f ".org-security/managed/zizmor.yml" ]; then
+            cfg_args=(--config .org-security/managed/zizmor.yml)
+          fi
+          read -r -a paths <<< "$ZIZMOR_PATHS"
+          zizmor --offline "${cfg_args[@]}" --min-severity "$ZIZMOR_MIN_SEVERITY" "${paths[@]}"
+          rm -rf .org-security
+      - name: Scan for secrets (gitleaks)
+        if: inputs.run-gitleaks
         env:
           SCANNER_DIR: ${{ runner.temp }}/gitleaks
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GITLEAKS_MODE: ${{ inputs.gitleaks-mode }}
+          GITLEAKS_CONFIG: ${{ inputs.gitleaks-config }}
         run: |
           set -euo pipefail
           mkdir -p "$SCANNER_DIR"
@@ -41,4 +92,16 @@ jobs:
             https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
           echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  $SCANNER_DIR/gitleaks.tar.gz" | sha256sum --check
           tar -xzf "$SCANNER_DIR/gitleaks.tar.gz" -C "$SCANNER_DIR" gitleaks
-          "$SCANNER_DIR/gitleaks" git --redact --no-banner --log-opts="--all" .
+          cfg_args=()
+          if [ -n "$GITLEAKS_CONFIG" ] && [ -f "$GITLEAKS_CONFIG" ]; then
+            cfg_args=(--config "$GITLEAKS_CONFIG")
+          fi
+          if [ "$GITLEAKS_MODE" = "all" ]; then
+            "$SCANNER_DIR/gitleaks" git "${cfg_args[@]}" --redact --verbose --no-banner --log-opts="--all" .
+          else
+            if [ -n "$BASE_SHA" ] && git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null \
+              && [ "$(git rev-list --count "${BASE_SHA}..HEAD")" -gt 0 ]; then
+              "$SCANNER_DIR/gitleaks" git "${cfg_args[@]}" --redact --verbose --no-banner --log-opts="${BASE_SHA}..HEAD" .
+            fi
+            "$SCANNER_DIR/gitleaks" dir "${cfg_args[@]}" --redact --verbose --no-banner .
+          fi
