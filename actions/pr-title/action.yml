@@ -40,7 +40,7 @@ runs:
         } >> "$GITHUB_OUTPUT"
 
     - name: Validate PR title shape
-      uses: amannn/action-semantic-pull-request@v6
+      uses: amannn/action-semantic-pull-request@66e72920af32222769c386d81f89656ebcb6d6d5 # v6
       with:
         types: |
           feat
