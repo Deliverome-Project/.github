@@ -274,6 +274,27 @@ def compare(base: dict, head: dict, ecosystem: str):
 _MODAL_REQUIRED_IGNORES = {".env", ".env.*", "**/wrangler.toml"}
 _MODAL_ROOT_NAMES = {"REPO", "ROOT", "REPO_ROOT", "PROJECT_ROOT", "BASE_DIR"}
 _MODAL_FORBIDDEN_FILES = (".env", "wrangler.toml")
+_UNSAFE_MODEL_SUFFIXES = {".joblib", ".pkl", ".pickle", ".dill", ".cloudpickle"}
+
+
+def pickle_model_violations(base_ref: str) -> list[str]:
+    """Fail if a PR adds or modifies pickle-based model files (.joblib/.pkl/etc.).
+
+    Only checks files added or modified relative to ``base_ref`` so historical files
+    already on main do not block unrelated PRs.
+    """
+    diff = _git("diff", "--name-only", "--diff-filter=AM", base_ref, "HEAD")
+    if diff.returncode != 0:
+        return []
+    violations: list[str] = []
+    for rel in sorted(diff.stdout.splitlines()):
+        if Path(rel).suffix.lower() in _UNSAFE_MODEL_SUFFIXES:
+            violations.append(
+                f"unsafe serialized model: {rel}: pickle-based files (.joblib/.pkl/.pickle/.dill/"
+                ".cloudpickle) execute arbitrary code on load and bloat Git; keep training code + "
+                "S3 manifest in Git or use a safe format (skops, ONNX, safetensors, XGBoost .ubj/.json)"
+            )
+    return violations
 
 
 def _string_collection(node: ast.AST | None) -> set[str]:
@@ -413,6 +434,7 @@ def main() -> int:
     if os.environ.get("CHECK_STANDARDS", "true").lower() != "false":
         errors += standards_drift()
     errors += modal_hygiene_violations(Path("."))
+    errors += pickle_model_violations(base_ref)
 
     for n in notes:
         print(n)

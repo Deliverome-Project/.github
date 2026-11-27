@@ -248,3 +248,39 @@ def test_modal_hygiene_blocks_unignored_repo_root_and_secret_files(tmp_path):
     assert dg.modal_hygiene_violations(
         tmp_path, tracked=["good_root.py", "good_subdir.py", "good_example.py"]
     ) == []
+
+
+def test_pickle_models_blocked_when_added_or_modified_not_legacy(tmp_path, monkeypatch):
+    import subprocess
+
+    def git(*a):
+        subprocess.run(["git", *a], cwd=tmp_path, check=True, capture_output=True)
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    (tmp_path / "legacy.joblib").write_bytes(b"old-model")
+    git("add", ".")
+    git("commit", "-qm", "base")
+
+    # Unrelated PR touching a safe JSON manifest passes despite legacy.joblib on main.
+    (tmp_path / "model_manifest.json").write_text('{"sha256": "abc"}\n')
+    git("add", ".")
+    git("commit", "-qm", "safe manifest")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("BASE_SHA", "HEAD~1")
+    monkeypatch.setenv("CHECK_STANDARDS", "false")
+    assert dg.main() == 0
+
+    # Adding a new .joblib or .pkl file fails.
+    (tmp_path / "new_model.joblib").write_bytes(b"pickle-bytes")
+    git("add", ".")
+    git("commit", "-qm", "add joblib")
+    assert dg.main() == 1
+
+    # Modifying even a legacy .joblib file fails.
+    git("reset", "--hard", "HEAD~1")
+    (tmp_path / "legacy.joblib").write_bytes(b"retrained")
+    git("add", ".")
+    git("commit", "-qm", "modify legacy joblib")
+    assert dg.main() == 1

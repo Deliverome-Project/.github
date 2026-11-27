@@ -87,6 +87,11 @@ A reusable workflow that fails a pull request when it
 5. **bakes local secrets into a Modal image**: statically parses tracked `.py` files and fails
    if any `add_local_dir` copies the repo root without ignoring `.env`, `.env.*`, and
    `**/wrangler.toml`, or if `add_local_file` copies `.env` or `wrangler.toml`.
+6. **adds or modifies a pickle-based model file** (`.joblib`, `.pkl`, `.pickle`, `.dill`,
+   `.cloudpickle`): blocks unsafe/unreviewable serialized models in Git (existing historical
+   files on `main` are grandfathered so unrelated PRs stay unblocked). Store trained models
+   in versioned S3 with a JSON manifest in Git, or use safe formats (`skops`, ONNX,
+   `safetensors`, XGBoost `.ubj`/`.json`).
 
 It reads every `uv.lock` (PyPI), `Cargo.lock` (crates.io), `package-lock.json` (npm) and
 `renv.lock` (R: CRAN and Bioconductor) in the repository, compares each with the pull
