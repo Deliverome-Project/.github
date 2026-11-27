@@ -41,6 +41,7 @@ Exit status 1 on any unallowed violation.
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import re
@@ -270,6 +271,93 @@ def compare(base: dict, head: dict, ecosystem: str):
     return down, changed
 
 
+_MODAL_REQUIRED_IGNORES = {".env", ".env.*", "**/wrangler.toml"}
+_MODAL_ROOT_NAMES = {"REPO", "ROOT", "REPO_ROOT", "PROJECT_ROOT", "BASE_DIR"}
+_MODAL_FORBIDDEN_FILES = (".env", "wrangler.toml")
+
+
+def _string_collection(node: ast.AST | None) -> set[str]:
+    if not isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        return set()
+    return {
+        elt.value
+        for elt in node.elts
+        if isinstance(elt, ast.Constant) and isinstance(elt.value, str)
+    }
+
+
+def _is_repo_root_expr(node: ast.AST | None) -> bool:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value.strip().rstrip("/") in {".", ""}
+    if isinstance(node, ast.Name):
+        return node.id in _MODAL_ROOT_NAMES
+    if isinstance(node, ast.Call):
+        fn = node.func
+        if isinstance(fn, ast.Name) and fn.id == "Path" and len(node.args) == 1:
+            return _is_repo_root_expr(node.args[0])
+    if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Attribute):
+        if node.value.attr == "parents":
+            return True
+    return False
+
+
+def _copies_secret_file(node: ast.AST | None) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        name = Path(node.value).name
+        if name == ".env" or name.startswith(".env.") or name == "wrangler.toml":
+            if name != ".env.example":
+                return node.value
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+        return _copies_secret_file(node.right)
+    return None
+
+
+def modal_hygiene_violations(root: Path = Path("."), tracked: list[str] | None = None) -> list[str]:
+    """Fail if any Modal Image.add_local_dir/add_local_file can bake local secrets."""
+    if tracked is None:
+        tracked = _git("ls-files").stdout.splitlines()
+    violations: list[str] = []
+    for rel in sorted(tracked):
+        if not rel.endswith(".py"):
+            continue
+        p = root / rel
+        if not p.is_file():
+            continue
+        try:
+            text = p.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        if "add_local_dir" not in text and "add_local_file" not in text:
+            continue
+        try:
+            tree = ast.parse(text, filename=rel)
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                continue
+            attr = node.func.attr
+            src = node.args[0] if node.args else next(
+                (kw.value for kw in node.keywords if kw.arg in {"local_path", "local_dir"}), None
+            )
+            if attr == "add_local_dir" and _is_repo_root_expr(src):
+                ignore_kw = next((kw.value for kw in node.keywords if kw.arg == "ignore"), None)
+                ignored = _string_collection(ignore_kw)
+                missing = sorted(_MODAL_REQUIRED_IGNORES - ignored)
+                if missing:
+                    violations.append(
+                        f"modal hygiene: {rel}:{node.lineno}: add_local_dir copies repo root "
+                        f"without ignoring {missing} (Modal does not read .gitignore)"
+                    )
+            elif attr == "add_local_file":
+                bad = _copies_secret_file(src)
+                if bad:
+                    violations.append(
+                        f"modal hygiene: {rel}:{node.lineno}: add_local_file copies secret file {bad!r}"
+                    )
+    return violations
+
+
 def standards_drift() -> list[str]:
     """Python/uv pins that disagree with standards.toml, as error lines."""
     sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -324,6 +412,7 @@ def main() -> int:
 
     if os.environ.get("CHECK_STANDARDS", "true").lower() != "false":
         errors += standards_drift()
+    errors += modal_hygiene_violations(Path("."))
 
     for n in notes:
         print(n)
