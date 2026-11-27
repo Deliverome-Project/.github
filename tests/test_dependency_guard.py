@@ -220,3 +220,31 @@ def test_renv_downgrade_fails_without_an_age_lookup(tmp_path, monkeypatch):
     assert dg.main() == 1  # limpa 1.4.2 -> 1.4.1 is a silent downgrade
     monkeypatch.setenv("PR_BODY", "allow-downgrade: limpa")
     assert dg.main() == 0  # the BiocVersion upgrade alone passes
+
+
+def test_modal_hygiene_blocks_unignored_repo_root_and_secret_files(tmp_path):
+    (tmp_path / "bad_root.py").write_text(
+        'image = modal.Image.debian_slim().add_local_dir(".", "/repo", copy=True, ignore=[".venv"])\n'
+    )
+    (tmp_path / "bad_file.py").write_text(
+        'image = modal.Image.debian_slim().add_local_file(".env", "/repo/.env", copy=True)\n'
+    )
+    (tmp_path / "good_root.py").write_text(
+        'image = modal.Image.debian_slim().add_local_dir(".", "/repo", copy=True, '
+        'ignore=[".env", ".env.*", "**/wrangler.toml", ".venv"])\n'
+    )
+    (tmp_path / "good_subdir.py").write_text(
+        'image = modal.Image.debian_slim().add_local_dir(REPO / "src" / "pkg", "/root/pkg")\n'
+    )
+    (tmp_path / "good_example.py").write_text(
+        'image = modal.Image.debian_slim().add_local_file(".env.example", "/repo/.env.example")\n'
+    )
+
+    tracked = ["bad_root.py", "bad_file.py", "good_root.py", "good_subdir.py", "good_example.py"]
+    violations = dg.modal_hygiene_violations(tmp_path, tracked=tracked)
+    assert len(violations) == 2
+    assert any("bad_root.py" in v and ".env" in v for v in violations)
+    assert any("bad_file.py" in v and ".env" in v for v in violations)
+    assert dg.modal_hygiene_violations(
+        tmp_path, tracked=["good_root.py", "good_subdir.py", "good_example.py"]
+    ) == []

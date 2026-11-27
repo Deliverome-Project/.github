@@ -374,3 +374,45 @@ def test_no_ty_standard_means_no_ty_findings():
 
 def test_shipped_standard_pins_ty():
     assert st.load(ROOT / "standards.toml").ty
+
+
+def test_node_ruff_and_modal_standards():
+    std = st.Standards("3.14", "0.13.4", (), (), {}, node_major="26", ruff_minimum="0.17.2", modal_minimum="1.6.0")
+    uv_lock_bad = (
+        '[[package]]\nname = "ruff"\nversion = "0.16.0"\n'
+        'source = { registry = "https://pypi.org/simple" }\n'
+        '[[package]]\nname = "modal"\nversion = "1.4.2"\n'
+        'source = { registry = "https://pypi.org/simple" }\n'
+    )
+    uv_lock_ok = (
+        '[[package]]\nname = "ruff"\nversion = "0.17.2"\n'
+        'source = { registry = "https://pypi.org/simple" }\n'
+        '[[package]]\nname = "modal"\nversion = "1.6.0"\n'
+        'source = { registry = "https://pypi.org/simple" }\n'
+    )
+    bad = st.drift(
+        {
+            ".nvmrc": "22.14.0\n",
+            ".github/workflows/ci.yml": "      - uses: actions/setup-node@v4\n        with:\n          node-version: \"22\"\n",
+            "uv.lock": uv_lock_bad,
+        },
+        std,
+        "demo",
+    )
+    whats = {f.what for f in bad}
+    assert {".nvmrc Node major", "setup-node version", "ruff lock version", "modal lock version"} <= whats
+
+    ok = st.drift(
+        {
+            ".nvmrc": "26.12.1\n",
+            ".github/workflows/ci.yml": "      - uses: actions/setup-node@v4\n        with:\n          node-version: \"26\"\n",
+            "uv.lock": uv_lock_ok,
+        },
+        std,
+        "demo",
+    )
+    assert ok == []
+    loaded = st.load(ROOT / "standards.toml")
+    assert loaded.node_major == "26"
+    assert loaded.ruff_minimum
+    assert loaded.modal_minimum

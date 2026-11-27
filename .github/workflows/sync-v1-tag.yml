@@ -1,0 +1,30 @@
+name: Sync v1 tag
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-v1-tag
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Verify tests pass before advancing v1
+        run: pip install pytest==9.1.1 && pytest -q tests
+      - name: Fast-forward v1 tag to main
+        run: |
+          git tag -f v1 "$GITHUB_SHA"
+          git push origin refs/tags/v1 --force

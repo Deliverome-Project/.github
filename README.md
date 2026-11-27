@@ -59,20 +59,15 @@ its reason (deliverome-internal `envs/census` stays on 3.13 until tiledbsoma shi
 deliverome-internal runs `standards.py report` every Monday (`standards-drift.yml`) and emails
 security@deliverome.org through the security digest's topic when anything drifts.
 
-**Order the first time.** The guard workflow reads `standards.toml` from `main`, but its code
-comes from the `v1` tag. After this lands: run fan-out, merge its pull requests, then move `v1`
-so the drift check starts failing pull requests. Later edits to `standards.toml` need no tag
-move.
+**Auto-synced `v1` tag.** The guard workflow reads `standards.toml` from `main` and runs script code from tag `v1`. `.github/workflows/sync-v1-tag.yml` runs `pytest -q tests` on every push to `main` and automatically fast-forwards `v1` to `main`, so new rules take effect across all repos without a manual tag move.
 
-## Type checker: ty
+## Shared tool standards (`ty`, `node`, `ruff`, `modal`)
 
-`[ty] version` pins the exact [ty](https://github.com/astral-sh/ty) release a project uses when
-it type-checks with ty. Any `pyproject.toml` that lists `ty` as a dependency (project, optional or
-dependency group) must pin `ty==<version>`; anything else is drift (`ty pin`), reported by the
-dependency guard on pull requests and by the weekly drift job. Bump it here, at least 7 days after
-the release, and update each project's pin and lock (`uv add --dev ty==<version>`).
+- `[ty] version`: exact [ty](https://github.com/astral-sh/ty) release pinned in every `pyproject.toml` that depends on `ty` (`ty==<version>`).
+- `[node] major`: major Node.js version enforced across `.nvmrc` files and `setup-node` `node-version:` pins.
+- `[ruff] minimum` & `[modal] minimum`: minimum locked versions enforced against `uv.lock` whenever a repo locks `ruff` or `modal`.
 
-## Dependency guard
+## Dependency guard & Modal secret hygiene
 
 A reusable workflow that fails a pull request when it
 
@@ -87,8 +82,11 @@ A reusable workflow that fails a pull request when it
    it. `[[floors]]` in `standards.toml` lists each floor with its reason; raising one there
    reaches every calling repo on its next pull request. A version exactly on a floor is
    exempt from the age rule, since the fix may be days old.
-4. **drifts from the standard Python or uv** (see above). `with: check-standards: false`
+4. **drifts from the standard Python, uv, ty, Node, ruff, or Modal versions** (see above). `with: check-standards: false`
    turns this off for a repository that cannot follow it yet.
+5. **bakes local secrets into a Modal image**: statically parses tracked `.py` files and fails
+   if any `add_local_dir` copies the repo root without ignoring `.env`, `.env.*`, and
+   `**/wrangler.toml`, or if `add_local_file` copies `.env` or `wrangler.toml`.
 
 It reads every `uv.lock` (PyPI), `Cargo.lock` (crates.io), `package-lock.json` (npm) and
 `renv.lock` (R: CRAN and Bioconductor) in the repository, compares each with the pull

@@ -99,6 +99,9 @@ class Standards:
     uv_cloud: str = ""
     hook_template: str = ""
     ty: str = ""  # exact ty version projects pin; "" when the standard sets none
+    node_major: str = ""  # major Node.js version (.nvmrc, setup-node); "" when unset
+    ruff_minimum: str = ""  # minimum locked ruff in uv.lock; "" when unset
+    modal_minimum: str = ""  # minimum locked modal in uv.lock; "" when unset
 
     def ensure_uv(self) -> str:
         """The managed ensure-uv.sh, with this standard's uv versions filled in."""
@@ -138,6 +141,9 @@ def load(path: Path | str | None = None) -> Standards:
         uv_cloud=data["uv"].get("cloud", data["uv"]["minimum"]),
         hook_template=template.read_text() if template.exists() else "",
         ty=data.get("ty", {}).get("version", ""),
+        node_major=str(data.get("node", {}).get("major", "")),
+        ruff_minimum=data.get("ruff", {}).get("minimum", ""),
+        modal_minimum=data.get("modal", {}).get("minimum", ""),
     )
 
 
@@ -171,8 +177,8 @@ def relevant(path: str) -> bool:
     name = PurePosixPath(path).name
     if path.startswith(".github/workflows/") and name.endswith((".yml", ".yaml")):
         return True
-    return path in {HOOK, SETTINGS} or name in {"pyproject.toml", ".python-version", "ruff.toml",
-                                                ".ruff.toml"}
+    return path in {HOOK, SETTINGS} or name in {"pyproject.toml", ".python-version", ".nvmrc",
+                                                "ruff.toml", ".ruff.toml"}
 
 
 def _line_of(text: str, pos: int) -> int:
@@ -194,6 +200,8 @@ PY_FLOW = re.compile(r'(?m)^(\s*python(?:-version)?:\s*)\[([^\]]*)\]')
 PY_BLOCK = re.compile(r'(?m)^(\s*)python(?:-version)?:\s*\n((?:\1\s+-\s*["\']?3\.\d+["\']?\s*\n)+)')
 # a Python named on a command line: `uv sync --python 3.12`, `uv python install 3.12`
 PY_CLI = re.compile(r"(--python[ =]|\buv python install )(3\.\d+)\b")
+# setup-node scalar: `node-version: "26"` or `node-version: "26.12.1"` (expressions skip)
+NODE_SCALAR = re.compile(r'(?m)^(\s*-?\s*node-version:\s*)(["\']?)v?(\d+(?:\.\d+)*)(\2)(\s*(?:#.*)?)$')
 SETUP_UV = re.compile(r"(?m)^(\s*)-?\s*uses:\s*astral-sh/setup-uv@.*$")
 
 
@@ -255,6 +263,28 @@ def drift_python_version(path: str, text: str, std: Standards, repo: str) -> lis
     return []
 
 
+def drift_nvmrc(path: str, text: str, std: Standards) -> list[Finding]:
+    if not std.node_major:
+        return []
+    m = re.match(r"\s*v?(\d+(?:\.\d+)*)", text)
+    if m and m.group(1).split(".", 1)[0] != std.node_major:
+        return [Finding(path, 1, ".nvmrc Node major", m.group(1), f"{std.node_major}.x")]
+    return []
+
+
+def drift_uv_lock_tools(path: str, text: str, std: Standards) -> list[Finding]:
+    mins = [(pkg, ver) for pkg, ver in (("ruff", std.ruff_minimum), ("modal", std.modal_minimum)) if ver]
+    if not mins:
+        return []
+    locked = {name.lower(): version for name, version in _guard().parse_uv(text).values()}
+    out = []
+    for pkg, minimum in mins:
+        found = locked.get(pkg)
+        if found and _pep440(found) < _pep440(minimum):
+            out.append(Finding(path, 1, f"{pkg} lock version", found, f">={minimum}"))
+    return out
+
+
 def _setup_uv_versions(text: str):
     """(match_start, version_start, version) for each `version:` pinned on a setup-uv step."""
     lines = text.splitlines(keepends=True)
@@ -300,6 +330,11 @@ def drift_workflow(path: str, text: str, std: Standards, repo: str) -> list[Find
         if _pep440(version) < _pep440(std.uv_minimum):
             out.append(Finding(path, _line_of(text, start), "setup-uv version", version,
                                f">={std.uv_minimum}"))
+    if std.node_major:
+        for m in NODE_SCALAR.finditer(text):
+            if m.group(3).split(".", 1)[0] != std.node_major:
+                out.append(Finding(path, _line_of(text, m.start()), "setup-node version",
+                                   m.group(3), f"{std.node_major}.x"))
     return out
 
 
@@ -345,6 +380,10 @@ def drift(files: dict[str, str], std: Standards, repo: str) -> list[Finding]:
             out += drift_ruff(path, text, std, repo)
         elif name == ".python-version":
             out += drift_python_version(path, text, std, repo)
+        elif name == ".nvmrc":
+            out += drift_nvmrc(path, text, std)
+        elif name == "uv.lock":
+            out += drift_uv_lock_tools(path, text, std)
     return out
 
 
