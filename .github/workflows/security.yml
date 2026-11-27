@@ -47,7 +47,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          fetch-depth: ${{ inputs.run-gitleaks && 0 || 1 }}
+          fetch-depth: ${{ inputs.run-gitleaks && '0' || '1' }}
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -84,7 +84,7 @@ jobs:
           SCANNER_DIR: ${{ runner.temp }}/gitleaks
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           GITLEAKS_MODE: ${{ inputs.gitleaks-mode }}
-          GITLEAKS_CONFIG: ${{ inputs.gitleaks-config }}
+          GITLEAKS_CONFIG_PATH: ${{ inputs.gitleaks-config }}
         run: |
           set -euo pipefail
           mkdir -p "$SCANNER_DIR"
@@ -93,8 +93,8 @@ jobs:
           echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  $SCANNER_DIR/gitleaks.tar.gz" | sha256sum --check
           tar -xzf "$SCANNER_DIR/gitleaks.tar.gz" -C "$SCANNER_DIR" gitleaks
           cfg_args=()
-          if [ -n "$GITLEAKS_CONFIG" ] && [ -f "$GITLEAKS_CONFIG" ]; then
-            cfg_args=(--config "$GITLEAKS_CONFIG")
+          if [ -n "$GITLEAKS_CONFIG_PATH" ] && [ -f "$GITLEAKS_CONFIG_PATH" ]; then
+            cfg_args=(--config "$GITLEAKS_CONFIG_PATH")
           fi
           if [ "$GITLEAKS_MODE" = "all" ]; then
             "$SCANNER_DIR/gitleaks" git "${cfg_args[@]}" --redact --verbose --no-banner --log-opts="--all" .
