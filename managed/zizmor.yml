@@ -1,0 +1,10 @@
+# Org-wide zizmor policy for Deliverome repositories.
+# - All third-party GitHub Actions MUST be pinned to a full 40-char commit SHA.
+# - Org-internal Deliverome-Project/* reusable workflows and actions may use
+#   version tags such as @v1 (Deliverome-Project/.github auto-syncs v1 on main).
+rules:
+  unpinned-uses:
+    config:
+      policies:
+        Deliverome-Project/*: ref-pin
+        "*": hash-pin

@@ -221,3 +221,44 @@ jobs:
 ```bash
 python scripts/python_release_check.py --dry-run --root ../some-repo
 ```
+
+## Reusable Actions hardening & secret scan (`security.yml@v1`)
+
+A reusable workflow that audits a repository's GitHub Actions workflows with
+[zizmor](https://github.com/zizmorcore/zizmor) (enforcing full 40-character commit SHA pins on
+all third-party Actions via `managed/zizmor.yml`, minimal permissions, and no template
+injection) and scans PR commits + the HEAD working tree with checksum-verified
+[gitleaks](https://github.com/gitleaks/gitleaks).
+
+```yaml
+# .github/workflows/security.yml in the calling repo
+name: Security
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "29 8 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  security:
+    uses: Deliverome-Project/.github/.github/workflows/security.yml@v1
+```
+
+Optional inputs (`with:`):
+
+- `zizmor-paths` (default `.github/workflows`): space-separated paths to audit (e.g. `.github/workflows actions`).
+- `zizmor-config` (default `.github/zizmor.yml`): caller override; falls back to `managed/zizmor.yml` from `main`.
+- `zizmor-min-severity` (default `medium`): minimum severity to fail on.
+- `run-gitleaks` (default `true`): set to `false` if the repo already runs a dedicated required gitleaks workflow.
+- `gitleaks-mode` (default `diff-and-dir`): `diff-and-dir` (PR commits + HEAD tree) or `all` (full history).
+- `gitleaks-config` (default `.gitleaks.toml`): auto-used if present in the caller repo.
